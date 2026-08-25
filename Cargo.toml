@@ -1,0 +1,37 @@
+[package]
+name = "pocketrag"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Single-binary local RAG MCP server: MiniLM embeddings compiled in, hybrid BM25 + dense search, zero runtime downloads."
+license = "MIT"
+repository = "https://github.com/Ayush-yadav11/pocketrag"
+keywords = ["mcp", "rag", "embeddings", "local", "search"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "pocketrag"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+clap = { version = "4.6", features = ["derive", "env"] }
+redb = "4.2"
+rmcp = { version = "3.1", features = ["server", "macros", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tantivy = "0.26"
+tokenizers = "0.23"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

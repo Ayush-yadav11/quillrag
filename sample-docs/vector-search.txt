@@ -1,0 +1,15 @@
+Vector Database Notes
+=====================
+
+Embeddings map text to fixed-length float vectors so that semantically similar
+texts land close together in cosine space. all-MiniLM-L6-v2 produces 384-
+dimensional vectors normalized to unit length, which makes cosine similarity
+equivalent to a plain dot product.
+
+Exact search over a few thousand vectors is a single linear scan - roughly a
+millisecond on a modern CPU. Approximate indexes like HNSW only pay off past
+~100k vectors.
+
+Reciprocal Rank Fusion combines two ranked lists by summing 1/(k + rank) for
+each document, with k usually set to 60. It needs no score calibration between
+the lists, which is why hybrid dense+BM25 pipelines favor it.
