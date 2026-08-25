@@ -1,4 +1,4 @@
-# pocketrag
+# quillrag
 
 **A single-binary local RAG MCP server in Rust.** Starts in milliseconds. Ships
 as one file for macOS / Linux / Windows. No Node, no Python, no model-download
@@ -6,8 +6,8 @@ dance at first query — the MiniLM embedding model (~90 MB) and its tokenizer
 are compiled into the binary.
 
 ```
-$ ./pocketrag serve --data-dir ~/.local/share/pocketrag
-2026-08-25 INFO pocketrag 0.1.0 ready in 41ms      <- handshake-ready before the model loads
+$ ./quillrag serve --data-dir ~/.local/share/quillrag
+2026-08-25 INFO quillrag 0.1.0 ready in 41ms      <- handshake-ready before the model loads
 ```
 
 ## Why it's fast
@@ -39,16 +39,16 @@ Claude Desktop / Cursor / any MCP client:
 ```json
 {
   "mcpServers": {
-    "pocketrag": {
-      "command": "/usr/local/bin/pocketrag",
+    "quillrag": {
+      "command": "/usr/local/bin/quillrag",
       "args": ["serve"],
-      "env": { "POCKETRAG_DATA": "~/.local/share/pocketrag" }
+      "env": { "QUILLRAG_DATA": "~/.local/share/quillrag" }
     }
   }
 }
 ```
 
-Or just run `./pocketrag serve` and point any stdio client at it.
+Or just run `./quillrag serve` and point any stdio client at it.
 
 ## Tools
 
@@ -62,10 +62,10 @@ Or just run `./pocketrag serve` and point any stdio client at it.
 CLI equivalents (same engine):
 
 ```sh
-pocketrag index ~/notes              # incremental walk
-pocketrag search "auth flow" -k 5    # one-shot search
-pocketrag status                     # stats
-pocketrag clear                      # wipe
+quillrag index ~/notes              # incremental walk
+quillrag search "auth flow" -k 5    # one-shot search
+quillrag status                     # stats
+quillrag clear                      # wipe
 ```
 
 ## Design

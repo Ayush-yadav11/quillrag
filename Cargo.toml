@@ -1,5 +1,5 @@
 [package]
-name = "pocketrag"
+name = "quillrag"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
@@ -10,7 +10,7 @@ keywords = ["mcp", "rag", "embeddings", "local", "search"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "pocketrag"
+name = "quillrag"
 path = "src/main.rs"
 
 [dependencies]

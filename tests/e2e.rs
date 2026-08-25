@@ -40,16 +40,16 @@ impl Drop for TestServer {
     }
 }
 
-/// Spawn the pocketrag binary; a background thread pumps stdout lines into a
+/// Spawn the quillrag binary; a background thread pumps stdout lines into a
 /// channel so a hung server can never hang the test forever.
 fn spawn_server(args: &[&str]) -> TestServer {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pocketrag"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_quillrag"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn pocketrag");
+        .expect("spawn quillrag");
     let stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
 
@@ -84,11 +84,11 @@ fn mcp_stdio_handshake_and_tools() {
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "pocketrag-test", "version": "0.0.1" }
+            "clientInfo": { "name": "quillrag-test", "version": "0.0.1" }
         }
     }));
     assert_eq!(init["id"], 1);
-    assert_eq!(init["result"]["serverInfo"]["name"], "pocketrag");
+    assert_eq!(init["result"]["serverInfo"]["name"], "quillrag");
 
     // 2. initialized notification (no response expected)
     srv.send_raw(&serde_json::json!({
@@ -214,7 +214,7 @@ struct Out {
 }
 
 fn run(args: &[&str]) -> Out {
-    let out = Command::new(env!("CARGO_BIN_EXE_pocketrag"))
+    let out = Command::new(env!("CARGO_BIN_EXE_quillrag"))
         .args(args)
         .output()
         .expect("run subcommand");
@@ -227,7 +227,7 @@ fn run(args: &[&str]) -> Out {
 
 fn tempfile_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "pocketrag-test-{label}-{}-{}",
+        "quillrag-test-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

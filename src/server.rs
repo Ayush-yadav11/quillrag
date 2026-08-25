@@ -44,7 +44,7 @@ pub struct IndexArgs {
 }
 
 #[derive(Clone)]
-pub struct PocketRag {
+pub struct QuillRag {
     engine: Arc<Engine>,
     /// Lazily-initialized MiniLM. First search/index pays ~1-2 s once; the
     /// initialize handshake never touches this.
@@ -52,7 +52,7 @@ pub struct PocketRag {
 }
 
 #[tool_router]
-impl PocketRag {
+impl QuillRag {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         let store = Arc::new(Store::open(&data_dir)?);
         let bm25 = Arc::new(TantivyIndex::open(&data_dir)?);
@@ -236,12 +236,12 @@ fn expand_home(p: &str) -> String {
 }
 
 #[tool_handler]
-impl ServerHandler for PocketRag {
+impl ServerHandler for QuillRag {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new("pocketrag", env!("CARGO_PKG_VERSION"))
-                    .with_title("PocketRAG — single-binary local RAG"),
+                Implementation::new("quillrag", env!("CARGO_PKG_VERSION"))
+                    .with_title("QuillRAG — single-binary local RAG"),
             )
             .with_instructions(
                 "Local-first RAG over your own files. Workflow: call rag_index with a \

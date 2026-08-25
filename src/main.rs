@@ -1,4 +1,4 @@
-//! pocketrag — a single-binary local RAG MCP server.
+//! quillrag — a single-binary local RAG MCP server.
 //!
 //! Subcommands:
 //!   serve    Run as an MCP stdio server (default for editor/agent config)
@@ -21,7 +21,7 @@ use rmcp::ServiceExt;
 use std::path::PathBuf;
 
 fn default_data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("POCKETRAG_DATA") {
+    if let Ok(d) = std::env::var("QUILLRAG_DATA") {
         return PathBuf::from(d);
     }
     let base = std::env::var("XDG_DATA_HOME")
@@ -34,19 +34,19 @@ fn default_data_dir() -> PathBuf {
         })
         .or_else(|| std::env::var("APPDATA").ok().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("pocketrag")
+    base.join("quillrag")
 }
 
 #[derive(Parser)]
 #[command(
-    name = "pocketrag",
+    name = "quillrag",
     version,
     about = "Single-binary local RAG MCP server — embeddings compiled in, zero runtime downloads.",
     long_about = None
 )]
 struct Cli {
     /// Data directory for the index + materialized model cache.
-    #[arg(long, global = true, env = "POCKETRAG_DATA", default_value_os_t = default_data_dir())]
+    #[arg(long, global = true, env = "QUILLRAG_DATA", default_value_os_t = default_data_dir())]
     data_dir: PathBuf,
 
     #[command(subcommand)]
@@ -86,7 +86,7 @@ fn setup_tracing() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 // Our logs at info, third-party crate noise (tantivy segment
                 // churn) suppressed unless explicitly requested.
-                tracing_subscriber::EnvFilter::new("pocketrag=info,warn")
+                tracing_subscriber::EnvFilter::new("quillrag=info,warn")
             }),
         )
         .with_writer(std::io::stderr)
@@ -140,10 +140,10 @@ async fn main() -> Result<()> {
         Cmd::Serve => {
             setup_tracing();
             let t0 = std::time::Instant::now();
-            let svc = server::PocketRag::new(cli.data_dir.clone())
-                .context("initializing pocketrag engine")?;
+            let svc = server::QuillRag::new(cli.data_dir.clone())
+                .context("initializing quillrag engine")?;
             tracing::info!(
-                "pocketrag {} ready in {:?}",
+                "quillrag {} ready in {:?}",
                 env!("CARGO_PKG_VERSION"),
                 t0.elapsed()
             );
