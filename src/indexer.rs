@@ -53,21 +53,14 @@ pub const DEFAULT_EXTENSIONS: &[&str] = &[
 
 /// Skip dirs that are never useful in a knowledge corpus.
 fn is_ignored_dir(name: &str) -> bool {
+    // All dot-directories are config/metadata by convention (.git, .obsidian,
+    // .vscode, ...) — skip them wholesale rather than enumerating known names.
+    if name.starts_with('.') {
+        return true;
+    }
     matches!(
         name,
-        ".git"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | "build"
-            | ".venv"
-            | "venv"
-            | "__pycache__"
-            | ".next"
-            | ".cache"
-            | ".idea"
-            | ".vscode"
-            | "vendor"
+        "node_modules" | "target" | "dist" | "build" | "venv" | "__pycache__" | "vendor"
     )
 }
 
