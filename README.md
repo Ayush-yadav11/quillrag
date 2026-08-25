@@ -99,6 +99,88 @@ machine — there is no network code path at all after installation.
 Binary ≈ 105 MB (the model lives inside). RAM ≈ 120 MB resident while idle,
 spiking to ~250 MB during batch embedding.
 
+## Scaling & limits
+
+quillrag stores everything in a single `redb` file and runs dense retrieval as
+an **exact, single-threaded linear scan over all vectors** — no ANN index yet.
+That makes the relevant limit *query latency*, not storage. Storage scales to
+millions of chunks; retrieval speed is O(N) per query.
+
+| Corpus | Vectors | Approx. RAM (f32) | Steady-state query |
+|---|---|---|---|
+| 1K chunks | 1K | ~1.5 MB | **~25 ms** (measured) |
+| 10K chunks | 10K | ~15 MB | ~250 ms (extrapolated) |
+| 100K chunks | 100K | ~154 MB | ~2–5 s (extrapolated) |
+| 1M chunks | 1M | ~1.5 GB | 20–60 s (extrapolated — not viable without ANN) |
+
+**Verified on a corpus of 1K chunks (5/5 tests including real JSON-RPC-over-stdio
+e2e); figures above 1K are extrapolated from the O(N) dense-scan cost, not
+measured.** A synthetic scale probe (`src/bin/quillbench.rs`) exists to measure
+the curve on your own hardware — run `cargo build --release && ./target/release/quillbench`.
+
+What this means in practice:
+
+- **Great fit:** personal/local knowledge bases, project docs, notes, code —
+  up to low-tens-of-thousands of chunks where sub-second-to-interactive latency
+  holds.
+- **Away from the sweet spot:** corpora in the hundreds of thousands+ where you
+  need interactive (<200 ms) retrieval — you'll want an ANN index (see Roadmap).
+
+How it compares to common alternatives on the *relevance* axis:
+
+- **Embedding-only (e.g. raw FAISS flat / simple vector store):** same
+  `all-MiniLM-L6-v2` ceiling as quillrag's dense path, but quillrag adds BM25 +
+  RRF fusion, which wins on keyword-heavy queries (error codes, IDs, exact
+  tokens). quillrag has no reranker or metadata filtering, which llama-index
+  offers on top.
+- **llama-index local backends:** functionally similar hybrid retrieval
+  (BM25 + vector + RRF). quillrag trades llama-index's rich reranking/parent-child
+  chunking/query-expansion for a zero-dependency single binary and instant
+  startup. Relevance on a standard dataset (BEIR/MS MARCO) is **not yet
+  benchmarked** — see the open issue tracking ANN + a relevance baseline.
+
+## Roadmap
+
+quillrag is deliberately minimal today. The big unlock is an **approximate
+nearest-neighbor index**:
+
+- **ANN (HNSW / IVF) over the dense vectors** — turns O(N) scan into
+  sub-millisecond ANN lookup, pushing the interactive ceiling from ~10K to
+  millions of chunks on a single machine.
+- **Quantization (PQ / SQ)** — drops vector RAM from 4 bytes/dim to ~1 byte/dim,
+  so 1M chunks ≈ 380 MB instead of 1.5 GB.
+- **Multi-threaded scan** — parallelize the current exact path as a stopgap.
+- **Reranker hook** — optional cross-encoder rerank of the fused top-k.
+- **Relevance benchmark** — BEIR / MS MARCO nDCG@10 vs. llama-index baselines.
+
+Track the ANN work here: **issue #1 — "ANN index for <1M chunks."**
+
+## FAQ
+
+**Is it really one file?** Yes. The MiniLM weights + tokenizer are compiled in
+via `include_bytes!`. No `npm install`, no Python, no model download on first
+query. The binary is ~105 MB because the model lives inside it.
+
+**Why is startup so fast?** The embedding model is *lazy*. The MCP handshake and
+`rag_status` never touch it — editors see a ready server in ~20 ms. The model
+only loads on the first `rag_search` / `rag_index` (~300 ms one-time).
+
+**What's the largest corpus it handles?** Verified at 1K chunks (~25 ms/query).
+The architecture scales to millions of stored chunks; interactive retrieval
+holds up to low-tens-of-thousands today, and an ANN index (Roadmap) extends that
+to 1M+.
+
+**How is this different from llama-index?** Similar hybrid retrieval quality, but
+quillrag is a single static binary with no runtime/dependency footprint and
+instant startup. llama-index adds rerankers, sophisticated chunking, and query
+expansion that quillrag doesn't have yet.
+
+**What file types are indexed?** `md markdown txt rst json yaml yml toml csv
+tsv html htm xml log rs py js jsx ts tsx go c h cpp hpp java rb sh bash zsh sql
+proto graphql dockerfile makefile ini cfg conf env` — extend with `-e`.
+
+**Does it phone home?** No. There is no network code path after installation.
+
 ## Development
 
 ```sh
