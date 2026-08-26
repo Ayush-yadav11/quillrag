@@ -8,7 +8,7 @@ gets you from clone to merged PR.
 
 ```sh
 git clone https://github.com/Ayush-yadav11/quillrag.git
-cd pocketrag                 # note: folder keeps the historical name; crate is quillrag
+cd quillrag                  # clone creates this folder from the repo name
 cargo build --release        # debug works too, but see the caveat below
 cargo test --release
 ```
