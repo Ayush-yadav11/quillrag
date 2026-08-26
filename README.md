@@ -7,7 +7,7 @@ are compiled into the binary.
 
 ```
 $ ./quillrag serve --data-dir ~/.local/share/quillrag
-2026-08-25 INFO quillrag 0.1.0 ready in 41ms      <- handshake-ready before the model loads
+2026-08-26 INFO quillrag 0.1.2 ready in 41ms      <- handshake-ready before the model loads
 ```
 
 ## Why it's fast
@@ -24,9 +24,20 @@ it, so editors see an instant server.
 
 ## Install
 
+Download a prebuilt archive from the [latest release](https://github.com/Ayush-yadav11/pocketrag/releases/latest)
+— Windows x86_64, macOS Apple Silicon, and Linux x86_64 are all built by CI on
+every version tag:
+
 ```sh
-# from a release (recommended): grab the archive for your OS, done.
-cargo install --path .          # or build from source
+# linux/macOS example: fetch + extract the latest release
+gh release download --repo Ayush-yadav11/pocketrag -p '*linux*' | tar xz
+chmod +x quillrag && ./quillrag --version
+```
+
+Or build from source:
+
+```sh
+cargo install --path .
 ```
 
 Cross-compile targets used by CI: `x86_64-unknown-linux-gnu`,
@@ -89,7 +100,8 @@ quillrag clear                      # wipe
 tsx go c h cpp hpp java rb sh bash zsh sql proto graphql dockerfile makefile ini
 cfg conf env` — extend with `-e ext1,ext2` / `"extensions": [...]`.
 
-Ignored dirs: `.git node_modules target dist build .venv venv __pycache__ …`
+Ignored dirs: **every dot-directory** (`.git .obsidian .vscode …`) plus
+`node_modules target dist build venv __pycache__ vendor`.
 
 ## Privacy & footprint
 
@@ -180,6 +192,14 @@ tsv html htm xml log rs py js jsx ts tsx go c h cpp hpp java rb sh bash zsh sql
 proto graphql dockerfile makefile ini cfg conf env` — extend with `-e`.
 
 **Does it phone home?** No. There is no network code path after installation.
+
+## Changelog
+
+- **v0.1.2** — skip all dot-directories when indexing (`.obsidian` plugin configs
+  no longer pollute results); first fully automated 3-platform CI release.
+  *Upgrade note:* run `quillrag clear` once and re-index.
+- **v0.1.1** — CI-built release artifacts for linux/macos/windows with checksums.
+- **v0.1.0** — initial public release; renamed from pocketrag.
 
 ## Development
 
