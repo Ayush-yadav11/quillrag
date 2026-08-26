@@ -1,0 +1,11 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.Ayush-yadav11/quillrag",
+  "title": "quillrag",
+  "description": "Single-binary local RAG MCP server in Rust. MiniLM compiled in, hybrid search, zero deps.",
+  "version": "0.1.2",
+  "repository": {
+    "url": "https://github.com/Ayush-yadav11/quillrag",
+    "source": "github"
+  }
+}
