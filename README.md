@@ -1,9 +1,49 @@
+<div align="center">
+
 # quillrag
 
-**A single-binary local RAG MCP server in Rust.** Starts in milliseconds. Ships
-as one file for macOS / Linux / Windows. No Node, no Python, no model-download
-dance at first query — the MiniLM embedding model (~90 MB) and its tokenizer
-are compiled into the binary.
+**One file. Zero dependencies. Ready before your editor finishes loading.**
+
+A local RAG engine in a single static binary — MiniLM embeddings compiled
+inside, hybrid dense + BM25 retrieval, MCP-native. No Node, no Python,
+no model download on first query.
+
+[![release](https://img.shields.io/github/v/release/Ayush-yadav11/pocketrag)](https://github.com/Ayush-yadav11/pocketrag/releases/latest)
+[![platforms](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Ayush-yadav11/pocketrag/releases/latest)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+<img src="assets/demo.gif" alt="quillrag terminal demo: serve, index, search" width="720"/>
+
+</div>
+
+---
+
+## Why quillrag
+
+| | |
+|---|---|
+| **~20 ms to ready** | MCP handshake completes before the model even loads |
+| **Zero runtime deps** | no Node, no Python, no pip/npm, no model downloads — ever |
+| **Hybrid retrieval** | dense cosine ⊕ BM25 fused with Reciprocal Rank Fusion |
+| **Private by construction** | no network code path after installation |
+| **One file, three OSes** | ~105 MB (the model lives inside), CI-built for linux/macOS/Windows |
+
+## Quick start
+
+```sh
+# 1. grab a prebuilt binary (or cargo install --path .)
+gh release download --repo Ayush-yadav11/pocketrag -p '*linux*'
+tar xzf quillrag-x86_64-linux.tar.gz && chmod +x quillrag
+
+# 2. point it at any folder of notes/docs/code
+./quillrag index ~/notes          # incremental walk
+
+# 3. ask it something
+./quillrag search "how does backpropagation work"
+```
+
+Or wire it straight into Claude Desktop / Cursor and let the AI search your
+notes mid-conversation — config below.
 
 ```
 $ ./quillrag serve --data-dir ~/.local/share/quillrag
