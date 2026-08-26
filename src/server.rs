@@ -85,7 +85,7 @@ impl QuillRag {
     }
 
     #[tool(
-        description = "Search the local knowledge base with hybrid semantic + keyword retrieval. Returns ranked chunks with source paths."
+        description = "Search the local knowledge base using hybrid retrieval (dense MiniLM embeddings + BM25 keyword matching, fused via Reciprocal Rank Fusion). Returns up to top_k ranked chunks with source file paths, chunk indices, and relevance scores. Read-only: never modifies the index. If results are empty, call rag_index first to populate the knowledge base. Prefer this over rag_status when answering a user's question about their documents."
     )]
     async fn rag_search(
         &self,
@@ -130,7 +130,7 @@ impl QuillRag {
     }
 
     #[tool(
-        description = "Index documents into the local knowledge base. Pass a directory for an incremental walk (skips unchanged files, prunes deleted ones) or a single file. Safe to re-run."
+        description = "Index local documents into the knowledge base before searching. Pass an absolute directory path for a recursive incremental walk (skips unchanged files by content hash, prunes entries for deleted files) or a single file path. Idempotent and safe to re-run; only changed content is re-embedded. Supported types: md/txt/code files (see README for the full list); dot-directories like .git and .obsidian are skipped automatically. After indexing completes, use rag_search to query. To remove everything instead, use rag_clear."
     )]
     async fn rag_index(
         &self,
@@ -167,7 +167,9 @@ impl QuillRag {
         }
     }
 
-    #[tool(description = "Show knowledge base stats: documents, chunks, size, file types.")]
+    #[tool(
+        description = "Report knowledge base statistics: document count, chunk count, total indexed bytes, and per-file-type breakdown. Read-only and instant (does not load the embedding model). Use it to check whether anything is indexed before running a search."
+    )]
     async fn rag_status(&self) -> Result<CallToolResult, McpError> {
         match self.engine.store.stats() {
             Ok(stats) => {
@@ -195,7 +197,9 @@ impl QuillRag {
         }
     }
 
-    #[tool(description = "Delete ALL indexed documents and embeddings from the knowledge base.")]
+    #[tool(
+        description = "Destructive: permanently deletes ALL indexed documents, chunks, and embeddings from the knowledge base. Cannot be undone — source files on disk are not touched, but re-indexing from scratch is required afterwards. Confirm with the user before calling."
+    )]
     async fn rag_clear(&self) -> Result<CallToolResult, McpError> {
         let outcome = tokio::task::spawn_blocking({
             let store = self.engine.store.clone();
