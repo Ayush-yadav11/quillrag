@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85"
 description = "Single-binary local RAG MCP server: MiniLM embeddings compiled in, hybrid BM25 + dense search, zero runtime downloads."
 license = "MIT"
-repository = "https://github.com/Ayush-yadav11/pocketrag"
+repository = "https://github.com/Ayush-yadav11/quillrag"
 keywords = ["mcp", "rag", "embeddings", "local", "search"]
 categories = ["command-line-utilities", "development-tools"]
 

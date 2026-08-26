@@ -8,8 +8,8 @@ A local RAG engine in a single static binary — MiniLM embeddings compiled
 inside, hybrid dense + BM25 retrieval, MCP-native. No Node, no Python,
 no model download on first query.
 
-[![release](https://img.shields.io/github/v/release/Ayush-yadav11/pocketrag)](https://github.com/Ayush-yadav11/pocketrag/releases/latest)
-[![platforms](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Ayush-yadav11/pocketrag/releases/latest)
+[![release](https://img.shields.io/github/v/release/Ayush-yadav11/quillrag)](https://github.com/Ayush-yadav11/quillrag/releases/latest)
+[![platforms](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Ayush-yadav11/quillrag/releases/latest)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 <img src="assets/demo.gif" alt="quillrag terminal demo: serve, index, search" width="720"/>
@@ -32,7 +32,7 @@ no model download on first query.
 
 ```sh
 # 1. grab a prebuilt binary (or cargo install --path .)
-gh release download --repo Ayush-yadav11/pocketrag -p '*linux*'
+gh release download --repo Ayush-yadav11/quillrag -p '*linux*'
 tar xzf quillrag-x86_64-linux.tar.gz && chmod +x quillrag
 
 # 2. point it at any folder of notes/docs/code
@@ -64,13 +64,13 @@ it, so editors see an instant server.
 
 ## Install
 
-Download a prebuilt archive from the [latest release](https://github.com/Ayush-yadav11/pocketrag/releases/latest)
+Download a prebuilt archive from the [latest release](https://github.com/Ayush-yadav11/quillrag/releases/latest)
 — Windows x86_64, macOS Apple Silicon, and Linux x86_64 are all built by CI on
 every version tag:
 
 ```sh
 # linux/macOS example: fetch + extract the latest release
-gh release download --repo Ayush-yadav11/pocketrag -p '*linux*' | tar xz
+gh release download --repo Ayush-yadav11/quillrag -p '*linux*' | tar xz
 chmod +x quillrag && ./quillrag --version
 ```
 

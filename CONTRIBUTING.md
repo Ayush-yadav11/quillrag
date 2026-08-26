@@ -7,7 +7,7 @@ gets you from clone to merged PR.
 ## Development setup
 
 ```sh
-git clone https://github.com/Ayush-yadav11/pocketrag.git
+git clone https://github.com/Ayush-yadav11/quillrag.git
 cd pocketrag                 # note: folder keeps the historical name; crate is quillrag
 cargo build --release        # debug works too, but see the caveat below
 cargo test --release
@@ -67,7 +67,7 @@ These are scoped, self-contained, and reviewed promptly:
 - **Scalar quantization (SQ8) for stored vectors** — 4× RAM cut (#3)
 - **Reranker hook** — pluggable post-fusion rescoring stage (#4)
 
-Bigger arcs live in [#1 — ANN index](https://github.com/Ayush-yadav11/pocketrag/issues/1).
+Bigger arcs live in [#1 — ANN index](https://github.com/Ayush-yadav11/quillrag/issues/1).
 
 ## Questions
 
