@@ -7,13 +7,9 @@
 //!   status   Print knowledge base stats
 //!   clear    Wipe the knowledge base
 
-mod assets;
-mod chunker;
-mod embedder;
-mod indexer;
-mod search;
-mod server;
-mod store;
+// Engine lives in the lib crate (shared with tests/benches); re-export at
+// the binary root so existing `store::`, `search::` etc. paths still work.
+use quillrag::{embedder, indexer, search, server, store};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
