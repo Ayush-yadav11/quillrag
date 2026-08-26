@@ -1,0 +1,7 @@
+target/
+.git/
+.github/
+sample-docs/
+*.md
+!README.md
+/tmp/
