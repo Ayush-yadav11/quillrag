@@ -228,7 +228,7 @@ pub fn index_directory(
         let text = match read_text(path) {
             Ok(t) => t,
             Err(e) => {
-                report.failed.push(format!("{} ({e})", path.display()));
+                report.failed.push(format!("{} (t)", path.display()));
                 continue;
             }
         };
@@ -241,7 +241,7 @@ pub fn index_directory(
         }
         match store.upsert_document(&key, f.hash, f.mtime_secs, f.size, &chunks, embedder) {
             Ok(_) => report.indexed.push(key),
-            Err(e) => report.failed.push(format!("{} ({e})", path.display())),
+            Err(e) => report.failed.push(format!("{} ({})", path.display(), e)),
         }
     }
 
@@ -258,6 +258,9 @@ pub fn index_directory(
         }
     }
 
+    // Rebuild the BM25 sidecar ONCE for the whole batch, not per-document.
+    // (Previously this was called inside upsert_document path via index_one,
+    // causing O(N) full-index rebuilds during a directory index pass.)
     tantivy_idx.rebuild_from(store)?;
     Ok(report)
 }
