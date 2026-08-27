@@ -6,6 +6,7 @@
 //!   search   One-shot hybrid search from the command line
 //!   status   Print knowledge base stats
 //!   clear    Wipe the knowledge base
+//!   bench    Measure per-phase latency (embed/dense/bm25/fuse) for N queries
 
 // Engine lives in the lib crate (shared with tests/benches); re-export at
 // the binary root so existing `store::`, `search::` etc. paths still work.
@@ -14,6 +15,7 @@ use quillrag::{embedder, indexer, search, server, store};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
+use std::io::Write;
 use std::path::PathBuf;
 
 fn default_data_dir() -> PathBuf {
@@ -74,6 +76,12 @@ enum Cmd {
     Status,
     /// Delete everything in the knowledge base.
     Clear,
+    /// Measure per-phase latency for N queries (spike-only).
+    Bench {
+        /// Number of queries to run (use the sample-docs corpus).
+        #[arg(short = 'n', long, default_value_t = 10)]
+        iterations: usize,
+    },
 }
 
 fn setup_tracing() {
@@ -207,6 +215,119 @@ async fn main() -> Result<()> {
             eng.store.clear()?;
             eng.bm25.rebuild_from(&eng.store)?;
             println!("cleared.");
+            Ok(())
+        }
+        Cmd::Bench { iterations } => {
+            setup_tracing();
+            let mut eng = open_engine(&cli.data_dir)?;
+            println!(
+                "chunks: {} | iterations: {}",
+                eng.store.stats()?.chunks,
+                iterations
+            );
+            let queries = [
+                "how does embedding",
+                "bm25 search algorithm",
+                "chunking strategy overlap",
+                "vector cosine similarity",
+                "mcp server protocol",
+                "rag pipeline components",
+                "miniLM model architecture",
+                "redb storage internals",
+                "tantivy index performance",
+                "rust binary distribution",
+                "hybrid retrieval fusion",
+                "reciprocal rank fusion",
+                "tokenizers crate behavior",
+                "cargo build optimization",
+                "clippy linter usage in rust",
+            ];
+            let mut embed_ms = Vec::new();
+            let mut dense_ms = Vec::new();
+            let mut bm25_ms = Vec::new();
+            let mut fuse_ms = Vec::new();
+            let mut total_ms = Vec::new();
+
+            for (i, q) in queries.iter().cycle().take(iterations).enumerate() {
+                let t0 = std::time::Instant::now();
+                let qvec = eng.embedder.embed_one(q).unwrap();
+                let t_embed = t0.elapsed();
+
+                let t1 = std::time::Instant::now();
+                let dense_keys = eng.store.dense_scan(&qvec).unwrap();
+                let t_dense = t1.elapsed();
+
+                let t2 = std::time::Instant::now();
+                let sparse = eng.bm25.search_bm25(q, 25).unwrap();
+                let t_bm25 = t2.elapsed();
+
+                let t3 = std::time::Instant::now();
+                let mut dense: Vec<(String, usize)> = Vec::new();
+                for (key, _) in dense_keys.into_iter().take(25) {
+                    if let Some(row) = eng.store.get_chunk_row(key).unwrap() {
+                        dense.push((row.path, row.ordinal));
+                    }
+                }
+                let _fused = search::rrf_fuse(dense, sparse, 5);
+                let t_fuse = t3.elapsed();
+
+                let total = t_embed + t_dense + t_bm25 + t_fuse;
+                if i > 0 {
+                    embed_ms.push(t_embed.as_secs_f64() * 1000.0);
+                    dense_ms.push(t_dense.as_secs_f64() * 1000.0);
+                    bm25_ms.push(t_bm25.as_secs_f64() * 1000.0);
+                    fuse_ms.push(t_fuse.as_secs_f64() * 1000.0);
+                    total_ms.push(total.as_secs_f64() * 1000.0);
+                }
+            }
+
+            if total_ms.is_empty() {
+                println!("need at least 2 iterations for timing — rerun with -n 2");
+                return Ok(());
+            }
+
+            let p = |v: &Vec<f64>| {
+                let n = v.len() as f64;
+                let s: f64 = v.iter().sum();
+                let mean = s / n;
+                let mut sorted = v.clone();
+                sorted.sort_by(|a, b| a.total_cmp(b));
+                let p50 = sorted[(n * 0.5) as usize];
+                let p95 = sorted[(n * 0.95) as usize];
+                (mean, p50, p95)
+            };
+
+            let (e_m, e_p50, e_p95) = p(&embed_ms);
+            let (d_m, d_p50, d_p95) = p(&dense_ms);
+            let (b_m, b_p50, b_p95) = p(&bm25_ms);
+            let (f_m, f_p50, f_p95) = p(&fuse_ms);
+            let (t_m, t_p50, t_p95) = p(&total_ms);
+
+            println!();
+            println!("phase    | count | mean  | p50   | p95");
+            println!("---------|-------|-------|-------|------");
+            println!(
+                "embed    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, e_m, e_p50, e_p95
+            );
+            println!(
+                "dense    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, d_m, d_p50, d_p95
+            );
+            println!(
+                "bm25     | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, b_m, b_p50, b_p95
+            );
+            println!(
+                "fuse     | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, f_m, f_p50, f_p95
+            );
+            println!("---------|-------|-------|-------|------");
+            println!(
+                "total    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, t_m, t_p50, t_p95
+            );
+            writeln!(std::io::stderr(), "bench done @ {}", t_m).ok();
             Ok(())
         }
     }
