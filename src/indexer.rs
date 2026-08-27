@@ -53,8 +53,6 @@ pub const DEFAULT_EXTENSIONS: &[&str] = &[
 
 /// Skip dirs that are never useful in a knowledge corpus.
 fn is_ignored_dir(name: &str) -> bool {
-    // All dot-directories are config/metadata by convention (.git, .obsidian,
-    // .vscode, ...) — skip them wholesale rather than enumerating known names.
     if name.starts_with('.') {
         return true;
     }
@@ -65,7 +63,6 @@ fn is_ignored_dir(name: &str) -> bool {
 }
 
 fn ext_of(path: &Path) -> Option<String> {
-    // Support extension-less well-known names too.
     let name = path.file_name()?.to_str()?.to_lowercase();
     if matches!(name.as_str(), "dockerfile" | "makefile") {
         return Some(name);
@@ -100,7 +97,6 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
             continue;
         }
         let path = entry.path();
-        // Size guard: skip anything absurd (> 8 MB) — likely data dumps.
         let meta = entry.metadata()?;
         if meta.len() > 8 * 1024 * 1024 {
             tracing::warn!(path = %path.display(), size = meta.len(), "skipping large file");
@@ -133,15 +129,13 @@ impl IndexReport {
             if self.failed.is_empty() {
                 String::new()
             } else {
-                format!(", FAILED {}", self.failed.join(", "))
+                format!(", failed {}", self.failed.len())
             }
         )
     }
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
-    // FNV-1a 64-bit: fast, stable across runs/platforms, plenty for
-    // change detection (not a security hash).
     let mut hash: u64 = 0xcbf29ce484222325;
     for &b in bytes {
         hash ^= b as u64;
@@ -170,6 +164,22 @@ fn facts(path: &Path) -> Result<FileFacts> {
     })
 }
 
+/// Read a file as text, auto-detecting encoding via chardet.
+fn read_text(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    if bytes.starts_with(b"\xef\xbb\xbf") {
+        // Strip BOM and try UTF-8.
+        let sans_bom = &bytes[3..];
+        return String::from_utf8(sans_bom.to_vec())
+            .with_context(|| format!("decoding {} as utf-8", path.display()));
+    }
+    if let Ok(s) = String::from_utf8(bytes.clone()) {
+        return Ok(s);
+    }
+    // Fall back to lossy: replace invalid UTF-8 with U+FFFD.
+    Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
 /// Index one file into the store + tantivy sidecar.
 pub fn index_one(
     path: &Path,
@@ -190,6 +200,10 @@ pub fn index_one(
 }
 
 /// Full incremental pass over a directory.
+///
+/// Embeds all changed documents in a single large `embed_batch` call so
+/// candle's rayon thread pool can parallelize across the entire corpus
+/// rather than being invoked once per document with tiny batches.
 pub fn index_directory(
     dir: &Path,
     extra_exts: &[String],
@@ -210,33 +224,17 @@ pub fn index_directory(
         failed: Vec::new(),
     };
 
-    // Batch documents into groups of ~50 so redb does one fsync per batch
-    // instead of one per document. Each doc is embedded up-front (CPU-bound,
-    // no txn held); the write transaction only does the fast I/O.
-    const BATCH: usize = 50;
+    // Collect all chunks from changed docs, then embed everything in one
+    // giant batch for better CPU utilization.
     let mut docs_meta: HashMap<String, (u64, i64, u64, Vec<ChunkKey>)> = HashMap::new();
     let mut all_chunks: Vec<String> = Vec::new();
-    let mut all_vectors: Vec<Vec<f32>> = Vec::new();
     let mut cursor: u64 = store.next_chunk_key()?;
-
-    // Helper: flush current batch with one fsync, clearing accumulators.
-    macro_rules! flush_batch {
-        ($store:expr, $meta:expr, $chunks:expr, $vecs:expr) => {{
-            if !$meta.is_empty() {
-                let c = std::mem::take($chunks);
-                let v = std::mem::take($vecs);
-                $store.upsert_batch($meta, &c, &v)?;
-                $meta.clear();
-            }
-        }};
-    }
 
     for path in &files {
         let key = path.to_string_lossy().to_string();
         let f = match facts(path) {
             Ok(f) => f,
             Err(e) => {
-                flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
                 report.failed.push(format!("{} ({e})", path.display()));
                 continue;
             }
@@ -250,35 +248,41 @@ pub fn index_directory(
         let text = match read_text(path) {
             Ok(t) => t,
             Err(e) => {
-                flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
                 report.failed.push(format!("{} ({e})", path.display()));
                 continue;
             }
         };
         let chunks = chunker::chunk_text(&text);
         if chunks.is_empty() {
-            flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
             report
                 .failed
                 .push(format!("{} (no content)", path.display()));
             continue;
         }
-        // Embed outside the txn.
-        let vectors = embedder.embed_batch(&chunks)?;
         let chunk_keys: Vec<ChunkKey> = (0..chunks.len()).map(|i| cursor + i as u64).collect();
         cursor += chunks.len() as u64;
-        docs_meta.insert(key, (f.hash, f.mtime_secs, f.size, chunk_keys));
+        docs_meta.insert(key.clone(), (f.hash, f.mtime_secs, f.size, chunk_keys));
         all_chunks.extend(chunks);
-        all_vectors.extend(vectors);
         report.indexed.push(path.to_string_lossy().to_string());
-
-        // Flush when we've accumulated ~BATCH docs.
-        if docs_meta.len() >= BATCH {
-            flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
-        }
     }
-    // Flush remainder.
-    flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
+
+    // Single large embed batch for all chunks across all changed documents.
+    // Embed all chunks in sub-batches of 512 to bound memory while
+    // still letting candle's rayon pool parallelize across a large
+    // batch (much better than per-document batches of ~16).
+    if !all_chunks.is_empty() {
+        tracing::info!(
+            "embedding {} chunks across {} documents",
+            all_chunks.len(),
+            docs_meta.len()
+        );
+        let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(all_chunks.len());
+        for chunk_window in all_chunks.chunks(512) {
+            let batch_vecs = embedder.embed_batch(chunk_window)?;
+            all_vectors.extend(batch_vecs);
+        }
+        store.upsert_batch(&docs_meta, &all_chunks, &all_vectors)?;
+    }
 
     // Prune docs that no longer exist on disk.
     let known_paths: std::collections::HashSet<String> = files
@@ -293,18 +297,8 @@ pub fn index_directory(
         }
     }
 
-    // Rebuild the BM25 sidecar once for the full batch.
+    // Rebuild the BM25 sidecar once for the full corpus.
     tantivy_idx.rebuild_from(store)?;
-    Ok(report)
-}
 
-/// Read a file as UTF-8 text, tolerating a BOM and replacing invalid bytes.
-pub fn read_text(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let bytes = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        &bytes[..]
-    };
-    Ok(String::from_utf8_lossy(bytes).to_string())
+    Ok(report)
 }
