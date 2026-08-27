@@ -3,7 +3,7 @@
   "name": "io.github.Ayush-yadav11/quillrag",
   "title": "quillrag",
   "description": "Single-binary local RAG MCP server in Rust. MiniLM compiled in, hybrid search, zero deps.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "repository": {
     "url": "https://github.com/Ayush-yadav11/quillrag",
     "source": "github"

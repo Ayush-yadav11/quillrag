@@ -1,6 +1,6 @@
 [package]
 name = "quillrag"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 rust-version = "1.85"
 description = "Single-binary local RAG MCP server: MiniLM embeddings compiled in, hybrid BM25 + dense search, zero runtime downloads."
