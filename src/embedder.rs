@@ -10,6 +10,21 @@ use candle_transformers::models::bert::BertModel;
 use std::path::Path;
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer};
 
+/// Initialize rayon's global thread pool with the right count for candle
+/// CPU inference. Defaults to all available cores; override with
+/// RAYON_NUM_THREADS or CANDLE_NUM_THREADS.
+fn init_thread_pool() {
+    let nt = std::env::var("CANDLE_NUM_THREADS")
+        .or_else(|_| std::env::var("RAYON_NUM_THREADS"))
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| num_cpus::get())
+        .max(1);
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(nt)
+        .build_global();
+}
+
 pub struct Embedder {
     model: BertModel,
     tokenizer: Tokenizer,
@@ -20,6 +35,7 @@ impl Embedder {
     /// Load from a materialized cache dir (weights + tokenizer on disk).
     pub fn load(cache_dir: &Path) -> Result<Self> {
         let (weights_path, tok_path) = assets::materialize(cache_dir)?;
+        init_thread_pool();
 
         let tokenizer = Tokenizer::from_file(&tok_path)
             .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
