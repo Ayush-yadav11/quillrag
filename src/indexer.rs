@@ -277,7 +277,7 @@ pub fn index_directory(
             docs_meta.len()
         );
         let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(all_chunks.len());
-        for chunk_window in all_chunks.chunks(512) {
+        for chunk_window in all_chunks.chunks(128) {
             let batch_vecs = embedder.embed_batch(chunk_window)?;
             all_vectors.extend(batch_vecs);
         }
