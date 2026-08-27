@@ -268,7 +268,7 @@ async fn main() -> Result<()> {
                         dense.push((row.path, row.ordinal));
                     }
                 }
-                let fused = search::rrf_fuse(dense, sparse, 5);
+                let _fused = search::rrf_fuse(dense, sparse, 5);
                 let t_fuse = t3.elapsed();
 
                 let total = t_embed + t_dense + t_bm25 + t_fuse;

@@ -15,7 +15,10 @@ use quillrag::{hybrid_search, Embedder, Store, TantivyIndex};
 use std::hash::{Hash, Hasher};
 
 #[derive(Parser)]
-#[command(name = "quillbench", about = "synthetic scale/latency probe for quillrag")]
+#[command(
+    name = "quillbench",
+    about = "synthetic scale/latency probe for quillrag"
+)]
 struct Cli {
     /// Base data dir; one fresh subdir per size.
     #[arg(long, default_value = "/tmp/quillbench")]

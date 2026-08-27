@@ -12,4 +12,4 @@ pub mod store;
 pub use chunker::chunk_text;
 pub use embedder::Embedder;
 pub use search::{hybrid_search, rrf_fuse, TantivyIndex};
-pub use store::{ChunkRow, ChunkKey, Hit, Store, StoreStats};
+pub use store::{ChunkKey, ChunkRow, Hit, Store, StoreStats};

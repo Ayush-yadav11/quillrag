@@ -3,7 +3,7 @@
 
 use crate::chunker;
 use crate::embedder::Embedder;
-use crate::store::Store;
+use crate::store::{ChunkKey, Store};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -217,24 +217,26 @@ pub fn index_directory(
     let mut docs_meta: HashMap<String, (u64, i64, u64, Vec<ChunkKey>)> = HashMap::new();
     let mut all_chunks: Vec<String> = Vec::new();
     let mut all_vectors: Vec<Vec<f32>> = Vec::new();
-    let next_key = store.next_chunk_key()?;
-    let mut cursor: u64 = next_key;
+    let mut cursor: u64 = store.next_chunk_key()?;
+
+    // Helper: flush current batch with one fsync, clearing accumulators.
+    macro_rules! flush_batch {
+        ($store:expr, $meta:expr, $chunks:expr, $vecs:expr) => {{
+            if !$meta.is_empty() {
+                let c = std::mem::take($chunks);
+                let v = std::mem::take($vecs);
+                $store.upsert_batch($meta, &c, &v)?;
+                $meta.clear();
+            }
+        }};
+    }
 
     for path in &files {
         let key = path.to_string_lossy().to_string();
         let f = match facts(path) {
             Ok(f) => f,
             Err(e) => {
-                if !docs_meta.is_empty() {
-                    store
-                        .upsert_batch(
-                            &docs_meta,
-                            std::mem::take(&mut all_chunks),
-                            std::mem::take(&mut all_vectors),
-                        )
-                        .ok();
-                    docs_meta.clear();
-                }
+                flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
                 report.failed.push(format!("{} ({e})", path.display()));
                 continue;
             }
@@ -248,32 +250,14 @@ pub fn index_directory(
         let text = match read_text(path) {
             Ok(t) => t,
             Err(e) => {
-                if !docs_meta.is_empty() {
-                    store
-                        .upsert_batch(
-                            &docs_meta,
-                            std::mem::take(&mut all_chunks),
-                            std::mem::take(&mut all_vectors),
-                        )
-                        .ok();
-                    docs_meta.clear();
-                }
+                flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
                 report.failed.push(format!("{} ({e})", path.display()));
                 continue;
             }
         };
         let chunks = chunker::chunk_text(&text);
         if chunks.is_empty() {
-            if !docs_meta.is_empty() {
-                store
-                    .upsert_batch(
-                        &docs_meta,
-                        std::mem::take(&mut all_chunks),
-                        std::mem::take(&mut all_vectors),
-                    )
-                    .ok();
-                docs_meta.clear();
-            }
+            flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
             report
                 .failed
                 .push(format!("{} (no content)", path.display()));
@@ -288,24 +272,13 @@ pub fn index_directory(
         all_vectors.extend(vectors);
         report.indexed.push(path.to_string_lossy().to_string());
 
-        // Flush when we've accumulated ~BATCH docs worth of chunks.
+        // Flush when we've accumulated ~BATCH docs.
         if docs_meta.len() >= BATCH {
-            store.upsert_batch(
-                &docs_meta,
-                std::mem::take(&mut all_chunks),
-                std::mem::take(&mut all_vectors),
-            )?;
-            docs_meta.clear();
+            flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
         }
     }
     // Flush remainder.
-    if !docs_meta.is_empty() {
-        store.upsert_batch(
-            &docs_meta,
-            std::mem::take(&mut all_chunks),
-            std::mem::take(&mut all_vectors),
-        )?;
-    }
+    flush_batch!(store, &mut docs_meta, &mut all_chunks, &mut all_vectors);
 
     // Prune docs that no longer exist on disk.
     let known_paths: std::collections::HashSet<String> = files

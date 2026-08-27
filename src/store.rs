@@ -194,12 +194,12 @@ impl Store {
             let mut idx = 0usize;
             for (path, (_hash, _mtime, _size, chunk_keys)) in docs_meta {
                 for (i, key) in chunk_keys.iter().enumerate() {
-                    let text = chunks.get(idx).copied().unwrap_or("");
+                    let text = chunks.get(idx).map(|s| s.as_str()).unwrap_or("");
                     let vec = vectors.get(idx).cloned().unwrap_or_default();
                     idx += 1;
                     let row = ChunkRow {
                         path: path.clone(),
-                        ordinal: *i,
+                        ordinal: i,
                         text: text.to_string(),
                     };
                     let json = serde_json::to_string(&row)?;
@@ -229,7 +229,7 @@ impl Store {
         Ok(chunks.len())
     }
 
-    fn next_chunk_key(&self) -> Result<u64> {
+    pub fn next_chunk_key(&self) -> Result<u64> {
         let rx = self.db.begin_read()?;
         let vecs = rx.open_table(VECS)?;
         let next = vecs.last()?.map(|(k, _)| k.value() + 1).unwrap_or(0);
