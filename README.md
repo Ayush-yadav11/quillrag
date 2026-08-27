@@ -235,6 +235,9 @@ proto graphql dockerfile makefile ini cfg conf env` — extend with `-e`.
 
 ## Changelog
 
+- **v0.1.3** — MCP tool descriptions rewritten for clarity, parameter semantics,
+  and behavioral transparency (read-only/destructive flags, usage guidance);
+  server.json shipped in-repo for MCP Registry publishing.
 - **v0.1.2** — skip all dot-directories when indexing (`.obsidian` plugin configs
   no longer pollute results); first fully automated 3-platform CI release.
   *Upgrade note:* run `quillrag clear` once and re-index.
