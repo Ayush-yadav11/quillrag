@@ -210,11 +210,31 @@ pub fn index_directory(
         failed: Vec::new(),
     };
 
+    // Batch documents into groups of ~50 so redb does one fsync per batch
+    // instead of one per document. Each doc is embedded up-front (CPU-bound,
+    // no txn held); the write transaction only does the fast I/O.
+    const BATCH: usize = 50;
+    let mut docs_meta: HashMap<String, (u64, i64, u64, Vec<ChunkKey>)> = HashMap::new();
+    let mut all_chunks: Vec<String> = Vec::new();
+    let mut all_vectors: Vec<Vec<f32>> = Vec::new();
+    let next_key = store.next_chunk_key()?;
+    let mut cursor: u64 = next_key;
+
     for path in &files {
         let key = path.to_string_lossy().to_string();
         let f = match facts(path) {
             Ok(f) => f,
             Err(e) => {
+                if !docs_meta.is_empty() {
+                    store
+                        .upsert_batch(
+                            &docs_meta,
+                            std::mem::take(&mut all_chunks),
+                            std::mem::take(&mut all_vectors),
+                        )
+                        .ok();
+                    docs_meta.clear();
+                }
                 report.failed.push(format!("{} ({e})", path.display()));
                 continue;
             }
@@ -228,21 +248,63 @@ pub fn index_directory(
         let text = match read_text(path) {
             Ok(t) => t,
             Err(e) => {
-                report.failed.push(format!("{} (t)", path.display()));
+                if !docs_meta.is_empty() {
+                    store
+                        .upsert_batch(
+                            &docs_meta,
+                            std::mem::take(&mut all_chunks),
+                            std::mem::take(&mut all_vectors),
+                        )
+                        .ok();
+                    docs_meta.clear();
+                }
+                report.failed.push(format!("{} ({e})", path.display()));
                 continue;
             }
         };
         let chunks = chunker::chunk_text(&text);
         if chunks.is_empty() {
+            if !docs_meta.is_empty() {
+                store
+                    .upsert_batch(
+                        &docs_meta,
+                        std::mem::take(&mut all_chunks),
+                        std::mem::take(&mut all_vectors),
+                    )
+                    .ok();
+                docs_meta.clear();
+            }
             report
                 .failed
                 .push(format!("{} (no content)", path.display()));
             continue;
         }
-        match store.upsert_document(&key, f.hash, f.mtime_secs, f.size, &chunks, embedder) {
-            Ok(_) => report.indexed.push(key),
-            Err(e) => report.failed.push(format!("{} ({})", path.display(), e)),
+        // Embed outside the txn.
+        let vectors = embedder.embed_batch(&chunks)?;
+        let chunk_keys: Vec<ChunkKey> = (0..chunks.len()).map(|i| cursor + i as u64).collect();
+        cursor += chunks.len() as u64;
+        docs_meta.insert(key, (f.hash, f.mtime_secs, f.size, chunk_keys));
+        all_chunks.extend(chunks);
+        all_vectors.extend(vectors);
+        report.indexed.push(path.to_string_lossy().to_string());
+
+        // Flush when we've accumulated ~BATCH docs worth of chunks.
+        if docs_meta.len() >= BATCH {
+            store.upsert_batch(
+                &docs_meta,
+                std::mem::take(&mut all_chunks),
+                std::mem::take(&mut all_vectors),
+            )?;
+            docs_meta.clear();
         }
+    }
+    // Flush remainder.
+    if !docs_meta.is_empty() {
+        store.upsert_batch(
+            &docs_meta,
+            std::mem::take(&mut all_chunks),
+            std::mem::take(&mut all_vectors),
+        )?;
     }
 
     // Prune docs that no longer exist on disk.
@@ -258,9 +320,7 @@ pub fn index_directory(
         }
     }
 
-    // Rebuild the BM25 sidecar ONCE for the whole batch, not per-document.
-    // (Previously this was called inside upsert_document path via index_one,
-    // causing O(N) full-index rebuilds during a directory index pass.)
+    // Rebuild the BM25 sidecar once for the full batch.
     tantivy_idx.rebuild_from(store)?;
     Ok(report)
 }

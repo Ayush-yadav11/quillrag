@@ -306,12 +306,27 @@ async fn main() -> Result<()> {
             println!();
             println!("phase    | count | mean  | p50   | p95");
             println!("---------|-------|-------|-------|------");
-            println!("embed    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms", iterations, e_m, e_p50, e_p95);
-            println!("dense    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms", iterations, d_m, d_p50, d_p95);
-            println!("bm25     | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms", iterations, b_m, b_p50, b_p95);
-            println!("fuse     | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms", iterations, f_m, f_p50, f_p95);
+            println!(
+                "embed    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, e_m, e_p50, e_p95
+            );
+            println!(
+                "dense    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, d_m, d_p50, d_p95
+            );
+            println!(
+                "bm25     | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, b_m, b_p50, b_p95
+            );
+            println!(
+                "fuse     | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, f_m, f_p50, f_p95
+            );
             println!("---------|-------|-------|-------|------");
-            println!("total    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms", iterations, t_m, t_p50, t_p95);
+            println!(
+                "total    | {:<5} | {:>5.1} | {:>5.1} | {:>5.1} ms",
+                iterations, t_m, t_p50, t_p95
+            );
             writeln!(std::io::stderr(), "bench done @ {}", t_m).ok();
             Ok(())
         }

@@ -141,58 +141,88 @@ impl Store {
         embedder: &mut crate::embedder::Embedder,
     ) -> Result<usize> {
         let vectors = embedder.embed_batch(chunks)?;
-
         let next_key = self.next_chunk_key()?;
-        let mut keys = Vec::with_capacity(chunks.len());
-        let db = self.db.clone();
 
+        // Pre-compute DocumentMeta chunk_keys.
+        let chunk_keys: Vec<ChunkKey> = (0..chunks.len()).map(|i| next_key + i as u64).collect();
+
+        let mut docs_meta: HashMap<String, (u64, i64, u64, Vec<ChunkKey>)> = HashMap::new();
+        docs_meta.insert(path.to_string(), (hash, mtime_secs, size, chunk_keys));
+
+        self.upsert_batch(&docs_meta, chunks, &vectors)
+    }
+
+    /// Insert/replace multiple documents' chunks in a single write
+    /// transaction (one fsync for the whole batch). Each entry in
+    /// `docs_meta` maps a doc path to (hash, mtime_secs, size, chunk_keys),
+    /// with chunk_keys already assigned in ascending order starting from
+    /// next_chunk_key().
+    ///
+    /// chunks/vectors must be aligned 1:1 with the concatenation of all
+    /// documents' chunk_keys in the order they appear in docs_meta.
+    pub fn upsert_batch(
+        &self,
+        docs_meta: &HashMap<String, (u64, i64, u64, Vec<ChunkKey>)>,
+        chunks: &[String],
+        vectors: &[Vec<f32>],
+    ) -> Result<usize> {
+        let db = self.db.clone();
         let wf = db.begin_write()?;
         {
-            // Remove any previous version of this doc.
-            let old_keys: Vec<ChunkKey> = {
-                let mut docs = wf.open_table(DOCS)?;
-                take_doc_meta(&mut docs, path)?
-            };
-            if !old_keys.is_empty() {
+            // Collect all chunk_keys so we can clean up removed docs in
+            // the same transaction.
+            let mut all_old_keys: Vec<ChunkKey> = Vec::new();
+            for path in docs_meta.keys() {
+                let old_keys = {
+                    let mut docs = wf.open_table(DOCS)?;
+                    take_doc_meta(&mut docs, path)?
+                };
+                all_old_keys.extend(old_keys);
+            }
+            if !all_old_keys.is_empty() {
                 let mut chunks_t = wf.open_table(CHUNKS)?;
                 let mut vecs_t = wf.open_table(VECS)?;
-                for k in old_keys {
+                for k in all_old_keys {
                     chunks_t.remove(k)?;
                     vecs_t.remove(k)?;
                 }
             }
 
-            {
-                let mut chunks_t = wf.open_table(CHUNKS)?;
-                let mut vecs_t = wf.open_table(VECS)?;
-                for (i, (text, vec)) in chunks.iter().zip(vectors.iter()).enumerate() {
-                    let key = next_key + i as u64;
+            // Write all new chunk/vec rows.
+            let mut chunks_t = wf.open_table(CHUNKS)?;
+            let mut vecs_t = wf.open_table(VECS)?;
+            let mut idx = 0usize;
+            for (path, (_hash, _mtime, _size, chunk_keys)) in docs_meta {
+                for (i, key) in chunk_keys.iter().enumerate() {
+                    let text = chunks.get(idx).copied().unwrap_or("");
+                    let vec = vectors.get(idx).cloned().unwrap_or_default();
+                    idx += 1;
                     let row = ChunkRow {
-                        path: path.to_string(),
-                        ordinal: i,
-                        text: text.clone(),
+                        path: path.clone(),
+                        ordinal: *i,
+                        text: text.to_string(),
                     };
                     let json = serde_json::to_string(&row)?;
-                    chunks_t.insert(key, json.as_str())?;
+                    chunks_t.insert(*key, json.as_str())?;
                     let mut byte_buf = Vec::with_capacity(vec.len() * 4);
-                    for v in vec {
+                    for v in &vec {
                         byte_buf.extend_from_slice(&v.to_le_bytes());
                     }
-                    vecs_t.insert(key, byte_buf.as_slice())?;
-                    keys.push(key);
+                    vecs_t.insert(*key, byte_buf.as_slice())?;
                 }
             }
 
-            {
-                let mut docs = wf.open_table(DOCS)?;
+            // Write doc metadata.
+            let mut docs = wf.open_table(DOCS)?;
+            for (path, (hash, mtime_secs, size, chunk_keys)) in docs_meta {
                 let meta = DocumentMeta {
-                    hash,
-                    mtime_secs,
-                    size,
-                    chunk_keys: keys.clone(),
+                    hash: *hash,
+                    mtime_secs: *mtime_secs,
+                    size: *size,
+                    chunk_keys: chunk_keys.clone(),
                 };
                 let json = serde_json::to_string(&meta)?;
-                docs.insert(path, json.as_str())?;
+                docs.insert(path.as_str(), json.as_str())?;
             }
         }
         wf.commit()?;
