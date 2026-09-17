@@ -130,7 +130,7 @@ impl QuillRag {
     }
 
     #[tool(
-        description = "Index local documents into the knowledge base before searching. Pass an absolute directory path for a recursive incremental walk (skips unchanged files by content hash, prunes entries for deleted files) or a single file path. Idempotent and safe to re-run; only changed content is re-embedded. Supported types: md/txt/code files (see README for the full list); dot-directories like .git and .obsidian are skipped automatically. After indexing completes, use rag_search to query. To remove everything instead, use rag_clear."
+        description = "Index local documents into the knowledge base before searching. Pass an absolute directory path for a recursive incremental walk (skips unchanged files by content hash; re-embeds only diffs) or a single file path. Symlinked files and directories are followed. Pruning is scoped to the directory you pass: documents indexed earlier from a different directory are left intact, and only files that lived under this directory and have since disappeared are removed. Idempotent and safe to re-run; only changed content is re-embedded. Embedding progress is logged to stderr for long runs. Supported types: md/txt/code files (see README for the full list); dot-directories like .git and .obsidian are skipped automatically. After indexing completes, use rag_search to query. To remove everything instead, use rag_clear."
     )]
     async fn rag_index(
         &self,
@@ -148,7 +148,16 @@ impl QuillRag {
 
             if path.is_dir() {
                 let report = indexer::index_directory(&path, &extra_exts, &store, &bm25, embedder)?;
-                Ok(report.summary())
+                if report.indexed.is_empty() && report.skipped_unchanged == 0 {
+                    Ok(format!(
+                        "WARNING: no files discovered under {} — check the path, \
+                         file extensions, and that sources are real files. {}",
+                        path.display(),
+                        report.summary()
+                    ))
+                } else {
+                    Ok(report.summary())
+                }
             } else if path.is_file() {
                 let n = indexer::index_one(&path, &store, &bm25, embedder)?;
                 Ok(format!(

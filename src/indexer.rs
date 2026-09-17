@@ -1,5 +1,10 @@
 //! Incremental indexing: walk a directory (or take explicit files), hash
 //! contents, skip unchanged docs, embed + store changed ones.
+//!
+//! Pruning is scoped to the directory root passed to `index_directory`:
+//! documents outside the current walk (e.g. indexed earlier from a different
+//! root) are never removed. Pass `--force` (CLI) or re-index the union tree
+//! when you intentionally want a full replacement.
 
 use crate::chunker;
 use crate::embedder::Embedder;
@@ -7,6 +12,7 @@ use crate::store::{ChunkKey, Store};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use walkdir::WalkDir;
 
 pub const DEFAULT_EXTENSIONS: &[&str] = &[
@@ -72,7 +78,11 @@ fn ext_of(path: &Path) -> Option<String> {
         .map(|e| e.to_lowercase())
 }
 
-/// Discover candidate files under `root`.
+/// Discover candidate files under `root`, following symlinks.
+///
+/// Symlinked files and directories are included (walkdir reports link cycles
+/// as errors, which we log and skip rather than abort on). Per-entry errors —
+/// broken symlinks, permission failures — are logged and skipped.
 pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>> {
     let mut allowed: std::collections::HashSet<String> =
         DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect();
@@ -81,8 +91,9 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
     }
 
     let mut out = Vec::new();
+    let mut walk_errors = 0usize;
     for entry in WalkDir::new(root)
-        .follow_links(false)
+        .follow_links(true)
         .into_iter()
         .filter_entry(|e| {
             e.file_type().is_file()
@@ -92,12 +103,39 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
                     .unwrap_or(true)
         })
     {
-        let entry = entry.with_context(|| format!("walking {}", root.display()))?;
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                walk_errors += 1;
+                if let Some(path) = err.path() {
+                    tracing::warn!("skipping unreadable path {}: {err}", path.display());
+                } else {
+                    tracing::warn!("walk error: {err}");
+                }
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
-        let meta = entry.metadata()?;
+        let meta = match entry.metadata() {
+            // With follow_links(true) this is the link target's metadata: a
+            // broken symlink surfaces here as an error.
+            Ok(m) => m,
+            Err(err) => {
+                walk_errors += 1;
+                tracing::warn!("skipping {}: {err}", path.display());
+                continue;
+            }
+        };
+        if meta.is_symlink() {
+            tracing::warn!(
+                path = %path.display(),
+                "skipping symlink pointing at a symlink (possible cycle)"
+            );
+            continue;
+        }
         if meta.len() > 8 * 1024 * 1024 {
             tracing::warn!(path = %path.display(), size = meta.len(), "skipping large file");
             continue;
@@ -107,6 +145,9 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
                 out.push(path.to_path_buf());
             }
         }
+    }
+    if walk_errors > 0 {
+        tracing::warn!("{walk_errors} entries were skipped due to walk errors");
     }
     out.sort();
     Ok(out)
@@ -201,9 +242,15 @@ pub fn index_one(
 
 /// Full incremental pass over a directory.
 ///
-/// Embeds all changed documents in a single large `embed_batch` call so
-/// candle's rayon thread pool can parallelize across the entire corpus
-/// rather than being invoked once per document with tiny batches.
+/// Embeds all changed documents in batches so candle's rayon thread pool can
+/// parallelize across the corpus rather than being invoked once per document
+/// with tiny batches. Progress is logged per sub-batch so long CPU runs are
+/// visibly alive.
+///
+/// Only documents under `dir` are eligible for pruning: a doc in the store
+/// survives this call unless its path sits inside `dir` and is no longer
+/// discovered. Indexing a different root therefore never deletes another
+/// root's corpus.
 pub fn index_directory(
     dir: &Path,
     extra_exts: &[String],
@@ -215,7 +262,17 @@ pub fn index_directory(
         store.clear()?;
     }
 
+    let t_walk = Instant::now();
     let files = discover_files(dir, extra_exts)?;
+    let walk_s = t_walk.elapsed().as_secs_f64();
+    if files.is_empty() {
+        tracing::warn!(
+            "no indexable files found under {} — nothing was indexed; \
+             check the path, file extensions (-e), and that sources are \
+             real files rather than dangling links",
+            dir.display()
+        );
+    }
     let known: HashMap<String, crate::store::DocumentMeta> = store.list_documents()?;
     let mut report = IndexReport {
         indexed: Vec::new(),
@@ -267,9 +324,11 @@ pub fn index_directory(
     }
 
     // Single large embed batch for all chunks across all changed documents.
-    // Embed all chunks in sub-batches of 512 to bound memory while
-    // still letting candle's rayon pool parallelize across a large
-    // batch (much better than per-document batches of ~16).
+    // Embed in sub-batches of 128 to bound memory while still letting
+    // candle's rayon pool parallelize within each batch (much better than
+    // per-document batches of ~16). Log progress per window: a silent
+    // 7-minute stretch is indistinguishable from a hang.
+    let t_embed = Instant::now();
     if !all_chunks.is_empty() {
         tracing::info!(
             "embedding {} chunks across {} documents",
@@ -277,28 +336,51 @@ pub fn index_directory(
             docs_meta.len()
         );
         let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(all_chunks.len());
-        for chunk_window in all_chunks.chunks(128) {
+        let total = all_chunks.len();
+        for (i, chunk_window) in all_chunks.chunks(128).enumerate() {
             let batch_vecs = embedder.embed_batch(chunk_window)?;
             all_vectors.extend(batch_vecs);
+            let done = (i + 1) * chunk_window.len();
+            tracing::info!(
+                "embedded {}/{} chunks ({}%)",
+                done,
+                total,
+                done * 100 / total
+            );
         }
+        tracing::info!("embedding done in {:.1}s", t_embed.elapsed().as_secs_f64());
         store.upsert_batch(&docs_meta, &all_chunks, &all_vectors)?;
     }
 
-    // Prune docs that no longer exist on disk.
+    // Prune docs that no longer exist on disk — scoped to this index root.
+    // Docs indexed from other roots (e.g. a previous `quillrag index
+    // ~/other-notes`) must survive this call. A doc is only prunable when
+    // its stored path sits inside the directory walked here.
     let known_paths: std::collections::HashSet<String> = files
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
     for k in known.keys() {
-        if !known_paths.contains(k) {
-            if store.delete_document(k)? {
-                report.removed_missing += 1;
-            }
+        if under_root(Path::new(k), dir) && !known_paths.contains(k) && store.delete_document(k)? {
+            report.removed_missing += 1;
         }
     }
 
     // Rebuild the BM25 sidecar once for the full corpus.
     tantivy_idx.rebuild_from(store)?;
 
+    tracing::debug!(
+        "index pass over {} took walk {:.2}s, embed {:.2}s",
+        dir.display(),
+        walk_s,
+        t_embed.elapsed().as_secs_f64()
+    );
+
     Ok(report)
+}
+
+/// True when `path` equals `root` or lives underneath it (lexically, by
+/// components — no filesystem access, works on already-normalized walk keys).
+fn under_root(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
 }

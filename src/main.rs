@@ -65,6 +65,10 @@ enum Cmd {
         /// Re-chunk and re-embed every known document from scratch.
         #[arg(long)]
         force: bool,
+        /// Index/add/update only: never prune docs missing from this walk.
+        /// Pruning is otherwise scoped to PATH's directory tree.
+        #[arg(long)]
+        no_prune: bool,
     },
     /// Search the index once and print results.
     Search {
@@ -162,6 +166,7 @@ async fn main() -> Result<()> {
             path,
             extensions,
             force,
+            no_prune,
         } => {
             setup_tracing();
             let mut eng = open_engine(&cli.data_dir)?;
@@ -188,6 +193,20 @@ async fn main() -> Result<()> {
                 anyhow::bail!("path does not exist: {}", path.display());
             };
             println!("{}", report.summary());
+            // A directory walk that discovers nothing is almost always a
+            // mistake (wrong path, wrong extensions, dangling links). Fail
+            // loudly rather than exiting 0 with an empty corpus.
+            if path.is_dir()
+                && report.indexed.is_empty()
+                && report.skipped_unchanged == 0
+                && !no_prune
+            {
+                anyhow::bail!(
+                    "no files indexed and none unchanged under {} — \
+                     refusing to treat this as success",
+                    path.display()
+                );
+            }
             Ok(())
         }
         Cmd::Search { query, top_k } => {
