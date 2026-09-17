@@ -205,6 +205,131 @@ fn full_pipeline_index_then_search() {
     cleanup(&data_dir);
 }
 
+// ---------- regression tests (issue class: silent indexer failures) ----------
+
+/// Symlinked sources used to be skipped by the walk (follow_links(false)),
+/// so a symlink-only staging tree indexed as 0 chunks with exit 0.
+#[cfg(unix)]
+#[test]
+fn symlinked_corpus_is_indexed() {
+    let data_dir = tempfile_dir("symlink");
+    let real_dir = tempfile_dir("real-corpus");
+    let stage_dir = tempfile_dir("stage");
+    std::fs::write(
+        real_dir.join("note.md"),
+        "anchor fact for symlink corpus test: quillrag follows links\n",
+    )
+    .unwrap();
+    // The exact staging shape that used to fail: real dir symlinked in.
+    std::os::unix::fs::symlink(&real_dir, stage_dir.join("linked")).unwrap();
+
+    let out = run(&[
+        "index",
+        stage_dir.to_str().unwrap(),
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(out.status, "index failed: {}", out.stderr);
+    assert!(
+        out.stdout.contains("indexed 1"),
+        "symlinked corpus indexed as empty: {} | stderr: {}",
+        out.stdout,
+        out.stderr
+    );
+
+    let out = run(&[
+        "search",
+        "anchor fact symlink corpus",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(out.status, "search failed: {}", out.stderr);
+    assert!(
+        out.stdout.contains("note.md"),
+        "symlinked doc not searchable:\n{}",
+        out.stdout
+    );
+
+    cleanup(&real_dir);
+    cleanup(&stage_dir);
+    cleanup(&data_dir);
+}
+
+/// Pruning used to be global to the store: indexing a second root wiped the
+/// first root's documents. Pruning must be scoped to the walked directory.
+#[test]
+fn prune_respects_separate_index_roots() {
+    let data_dir = tempfile_dir("roots");
+    let dir_a = tempfile_dir("root-a");
+    let dir_b = tempfile_dir("root-b");
+    std::fs::write(dir_a.join("a.md"), "document alpha lives in root a\n").unwrap();
+    std::fs::write(dir_b.join("b.md"), "document beta lives in root b\n").unwrap();
+
+    let out = run(&[
+        "index",
+        dir_a.to_str().unwrap(),
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(out.status, "index A failed: {}", out.stderr);
+    assert!(out.stdout.contains("indexed 1"), "A: {}", out.stdout);
+
+    let out = run(&[
+        "index",
+        dir_b.to_str().unwrap(),
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(out.status, "index B failed: {}", out.stderr);
+    assert!(out.stdout.contains("indexed 1"), "B: {}", out.stdout);
+    assert!(
+        out.stdout.contains("pruned 0"),
+        "second root pruned the first root's docs: {}",
+        out.stdout
+    );
+
+    let out = run(&[
+        "search",
+        "alpha lives root",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.stdout.contains("a.md"),
+        "root A doc vanished after indexing root B:\n{}",
+        out.stdout
+    );
+
+    // In-root pruning still works: delete a file, re-index that root.
+    std::fs::remove_file(dir_b.join("b.md")).unwrap();
+    let out = run(&[
+        "index",
+        dir_b.to_str().unwrap(),
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.stdout.contains("pruned 1"),
+        "in-root prune broken: {}",
+        out.stdout
+    );
+    let out = run(&[
+        "search",
+        "alpha lives root",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.stdout.contains("a.md"),
+        "root A doc lost after B's in-root prune:\n{}",
+        out.stdout
+    );
+
+    cleanup(&dir_a);
+    cleanup(&dir_b);
+    cleanup(&data_dir);
+}
+
 // ---------- helpers ----------
 
 struct Out {

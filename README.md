@@ -105,7 +105,7 @@ Or just run `./quillrag serve` and point any stdio client at it.
 
 | Tool | What it does |
 |---|---|
-| `rag_index`  | Incrementally index a directory/file. Skips unchanged files, prunes deleted ones, re-embeds only diffs. |
+| `rag_index`  | Incrementally index a directory/file. Skips unchanged files, re-embeds only diffs. Pruning is scoped to the directory you pass: docs indexed from other roots are untouched. Symlinked files/dirs are followed. |
 | `rag_search` | Hybrid retrieval: dense MiniLM cosine + BM25 keyword, fused with Reciprocal Rank Fusion. Returns ranked chunks with source paths. |
 | `rag_status` | Document/chunk counts, bytes indexed, file-type breakdown. |
 | `rag_clear`  | Wipe everything. |
@@ -142,6 +142,25 @@ cfg conf env` — extend with `-e ext1,ext2` / `"extensions": [...]`.
 
 Ignored dirs: **every dot-directory** (`.git .obsidian .vscode …`) plus
 `node_modules target dist build venv __pycache__ vendor`.
+
+### Indexing behavior
+
+```sh
+quillrag index ~/notes              # incremental walk of one root
+quillrag index ~/notes --no-prune   # add/update without deleting anything
+quillrag index ~/everything --force # wipe the store, rebuild from scratch
+```
+
+- **Pruning is scoped to the index root.** Docs indexed from `~/work-docs`
+  survive a later `quillrag index ~/personal-notes` against the same data
+  dir. Only files that lived under the directory being walked and have since
+  disappeared get pruned. Index multiple roots freely; re-index a common
+  parent (or use `--force`) when you want one tree to be the whole corpus.
+- **Symlinks are followed.** Staging trees built from symlinked source dirs
+  index normally. Cycles and broken links are logged and skipped, never
+  silently ignored.
+- **Progress is logged per 128-chunk embedding batch** (stderr), so a long
+  CPU indexing run is visibly alive.
 
 ## Privacy & footprint
 
@@ -235,6 +254,14 @@ proto graphql dockerfile makefile ini cfg conf env` — extend with `-e`.
 
 ## Changelog
 
+- **v0.1.5** — indexer safety fixes: pruning is now scoped to the index root
+  (a second `index` call against a different directory no longer wipes the
+  first root's documents); symlinks are followed during the walk (staging
+  trees of symlinked sources no longer index as 0 chunks — cycles and broken
+  links are logged and skipped); embedding progress is logged per batch; an
+  empty discovery result logs a loud warning instead of exiting silently;
+  new `--no-prune` flag for add-only sync.
+- **v0.1.4** — multi-thread inference + batched indexing.
 - **v0.1.3** — MCP tool descriptions rewritten for clarity, parameter semantics,
   and behavioral transparency (read-only/destructive flags, usage guidance);
   server.json shipped in-repo for MCP Registry publishing.
