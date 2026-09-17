@@ -74,6 +74,11 @@ gh release download --repo Ayush-yadav11/quillrag -p '*linux*' | tar xz
 chmod +x quillrag && ./quillrag --version
 ```
 
+> **Linux requirement:** v0.1.6 binaries are built on Ubuntu 24.04 runners and
+> link glibc 2.39 (`pidfd_spawnp`/`pidfd_getpid`). On older distros (glibc
+> < 2.39, e.g. Ubuntu 22.04), build from source with your local toolchain
+> instead: `cargo install --path .`.
+
 Or build from source:
 
 ```sh
