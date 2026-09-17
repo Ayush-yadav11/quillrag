@@ -40,7 +40,7 @@ impl TantivyIndex {
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
         let mut sb = Schema::builder();
-        let f_path = sb.add_text_field("path", TEXT);
+        let f_path = sb.add_text_field("path", TEXT | tantivy::schema::STORED);
         let f_ord = sb.add_u64_field("ordinal", ordinal_options());
         let f_text = sb.add_text_field("text", TEXT);
         let schema = sb.build();

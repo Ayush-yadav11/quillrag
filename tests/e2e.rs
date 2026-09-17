@@ -330,6 +330,95 @@ fn prune_respects_separate_index_roots() {
     cleanup(&data_dir);
 }
 
+#[test]
+fn partial_batch_progress_and_source_identity() {
+    let data = tempfile_dir("batch-data");
+    let root = tempfile_dir("batch-docs");
+    for i in 0..129 {
+        std::fs::write(
+            root.join(format!("doc{i:03}.md")),
+            format!("source marker {i} exact document content"),
+        )
+        .unwrap();
+    }
+    let out = run(&[
+        "index",
+        root.to_str().unwrap(),
+        "--data-dir",
+        data.to_str().unwrap(),
+    ]);
+    assert!(out.status, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("embedded 128/129 chunks"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("embedded 129/129 chunks (100%)"),
+        "{}",
+        out.stderr
+    );
+    {
+        let store = quillrag::Store::open(&data).unwrap();
+        for i in 0..129 {
+            let path = root.join(format!("doc{i:03}.md"));
+            let row = store
+                .get_chunk_by_ordinal(path.to_str().unwrap(), 0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.2, std::fs::read_to_string(path).unwrap());
+        }
+    }
+    let out = run(&[
+        "search",
+        "source marker 128",
+        "-k",
+        "1",
+        "--data-dir",
+        data.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status && out.stdout.contains("[1]"),
+        "{} {}",
+        out.stdout,
+        out.stderr
+    );
+    cleanup(&root);
+    cleanup(&data);
+}
+
+#[test]
+fn relative_then_absolute_index_reuses_document_identity() {
+    let data = tempfile_dir("identity-data");
+    let root = tempfile_dir("identity-root");
+    std::fs::create_dir(root.join("docs")).unwrap();
+    std::fs::write(root.join("docs/a.md"), "one source with a stable identity").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_quillrag"))
+        .current_dir(&root)
+        .args(["index", "./docs", "--data-dir", data.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = run(&[
+        "index",
+        root.join("docs").to_str().unwrap(),
+        "--data-dir",
+        data.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status && out.stdout.contains("unchanged 1"),
+        "{} {}",
+        out.stdout,
+        out.stderr
+    );
+    cleanup(&root);
+    cleanup(&data);
+}
+
 // ---------- helpers ----------
 
 struct Out {

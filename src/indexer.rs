@@ -3,8 +3,7 @@
 //!
 //! Pruning is scoped to the directory root passed to `index_directory`:
 //! documents outside the current walk (e.g. indexed earlier from a different
-//! root) are never removed. Pass `--force` (CLI) or re-index the union tree
-//! when you intentionally want a full replacement.
+//! root) are never removed. `--force` re-embeds only the selected sources.
 
 use crate::chunker;
 use crate::embedder::Embedder;
@@ -80,9 +79,8 @@ fn ext_of(path: &Path) -> Option<String> {
 
 /// Discover candidate files under `root`, following symlinks.
 ///
-/// Symlinked files and directories are included (walkdir reports link cycles
-/// as errors, which we log and skip rather than abort on). Per-entry errors —
-/// broken symlinks, permission failures — are logged and skipped.
+/// Symlinked files and directories are included. Any walk error aborts
+/// discovery before the index changes, including broken links and cycles.
 pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>> {
     let mut allowed: std::collections::HashSet<String> =
         DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect();
@@ -91,51 +89,27 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
     }
 
     let mut out = Vec::new();
-    let mut walk_errors = 0usize;
     for entry in WalkDir::new(root)
         .follow_links(true)
         .into_iter()
         .filter_entry(|e| {
-            e.file_type().is_file()
+            e.depth() == 0
+                || e.file_type().is_file()
                 || e.file_name()
                     .to_str()
                     .map(|n| !is_ignored_dir(n))
                     .unwrap_or(true)
         })
     {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                walk_errors += 1;
-                if let Some(path) = err.path() {
-                    tracing::warn!("skipping unreadable path {}: {err}", path.display());
-                } else {
-                    tracing::warn!("walk error: {err}");
-                }
-                continue;
-            }
-        };
+        let entry =
+            entry.with_context(|| format!("walking {}; index unchanged", root.display()))?;
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
-        let meta = match entry.metadata() {
-            // With follow_links(true) this is the link target's metadata: a
-            // broken symlink surfaces here as an error.
-            Ok(m) => m,
-            Err(err) => {
-                walk_errors += 1;
-                tracing::warn!("skipping {}: {err}", path.display());
-                continue;
-            }
-        };
-        if meta.is_symlink() {
-            tracing::warn!(
-                path = %path.display(),
-                "skipping symlink pointing at a symlink (possible cycle)"
-            );
-            continue;
-        }
+        let meta = entry
+            .metadata()
+            .with_context(|| format!("reading metadata {}", path.display()))?;
         if meta.len() > 8 * 1024 * 1024 {
             tracing::warn!(path = %path.display(), size = meta.len(), "skipping large file");
             continue;
@@ -145,9 +119,6 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
                 out.push(path.to_path_buf());
             }
         }
-    }
-    if walk_errors > 0 {
-        tracing::warn!("{walk_errors} entries were skipped due to walk errors");
     }
     out.sort();
     Ok(out)
@@ -228,6 +199,8 @@ pub fn index_one(
     tantivy_idx: &crate::search::TantivyIndex,
     embedder: &mut Embedder,
 ) -> Result<usize> {
+    let absolute = absolute_source_path(path)?;
+    let path = absolute.as_path();
     let text = read_text(path)?;
     let chunks = chunker::chunk_text(&text);
     if chunks.is_empty() {
@@ -258,16 +231,43 @@ pub fn index_directory(
     tantivy_idx: &crate::search::TantivyIndex,
     embedder: &mut Embedder,
 ) -> Result<IndexReport> {
-    if !store.schema_matches()? {
-        store.clear()?;
-    }
+    index_directory_with_options(
+        dir,
+        extra_exts,
+        store,
+        tantivy_idx,
+        embedder,
+        IndexOptions::default(),
+    )
+}
 
+#[derive(Default, Clone, Copy)]
+pub struct IndexOptions {
+    pub no_prune: bool,
+    pub force: bool,
+}
+
+pub fn index_directory_with_options(
+    dir: &Path,
+    extra_exts: &[String],
+    store: &Store,
+    tantivy_idx: &crate::search::TantivyIndex,
+    embedder: &mut Embedder,
+    options: IndexOptions,
+) -> Result<IndexReport> {
+    let dir = absolute_source_path(dir)?;
+    let dir = dir.as_path();
+    anyhow::ensure!(dir.is_dir(), "not a directory: {}", dir.display());
     let t_walk = Instant::now();
     let files = discover_files(dir, extra_exts)?;
+    anyhow::ensure!(
+        store.schema_matches()?,
+        "incompatible store schema; rebuild into a new data directory"
+    );
     let walk_s = t_walk.elapsed().as_secs_f64();
     if files.is_empty() {
         tracing::warn!(
-            "no indexable files found under {} — nothing was indexed; \
+            "no indexable files found under {}; nothing was indexed; \
              check the path, file extensions (-e), and that sources are \
              real files rather than dangling links",
             dir.display()
@@ -297,7 +297,7 @@ pub fn index_directory(
             }
         };
         if let Some(meta) = known.get(&key) {
-            if meta.hash == f.hash && meta.mtime_secs == f.mtime_secs {
+            if !options.force && meta.hash == f.hash && meta.mtime_secs == f.mtime_secs {
                 report.skipped_unchanged += 1;
                 continue;
             }
@@ -337,10 +337,10 @@ pub fn index_directory(
         );
         let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(all_chunks.len());
         let total = all_chunks.len();
-        for (i, chunk_window) in all_chunks.chunks(128).enumerate() {
+        for chunk_window in all_chunks.chunks(128) {
             let batch_vecs = embedder.embed_batch(chunk_window)?;
             all_vectors.extend(batch_vecs);
-            let done = (i + 1) * chunk_window.len();
+            let done = all_vectors.len();
             tracing::info!(
                 "embedded {}/{} chunks ({}%)",
                 done,
@@ -361,7 +361,12 @@ pub fn index_directory(
         .map(|p| p.to_string_lossy().to_string())
         .collect();
     for k in known.keys() {
-        if under_root(Path::new(k), dir) && !known_paths.contains(k) && store.delete_document(k)? {
+        if !options.no_prune
+            && under_root(Path::new(k), dir)
+            && !known_paths.contains(k)
+            && !Path::new(k).try_exists().unwrap_or(true)
+            && store.delete_document(k)?
+        {
             report.removed_missing += 1;
         }
     }
@@ -379,8 +384,24 @@ pub fn index_directory(
     Ok(report)
 }
 
-/// True when `path` equals `root` or lives underneath it (lexically, by
-/// components — no filesystem access, works on already-normalized walk keys).
+fn absolute_source_path(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    if absolute
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return absolute
+            .canonicalize()
+            .context("resolving parent-directory components");
+    }
+    Ok(absolute)
+}
+
+/// Preserve legacy relative keys because their original cwd is unknown.
 fn under_root(path: &Path, root: &Path) -> bool {
-    path.starts_with(root)
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        && path.starts_with(root)
 }

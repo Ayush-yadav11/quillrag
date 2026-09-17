@@ -41,6 +41,9 @@ pub struct IndexArgs {
     #[serde(default)]
     #[schemars(description = "Extra file extensions to include beyond the defaults")]
     pub extensions: Option<Vec<String>>,
+    /// Keep previously indexed documents even when missing from this walk.
+    #[serde(default)]
+    pub no_prune: bool,
 }
 
 #[derive(Clone)]
@@ -147,10 +150,20 @@ impl QuillRag {
             let embedder = guard.as_mut().expect("embedder loaded above");
 
             if path.is_dir() {
-                let report = indexer::index_directory(&path, &extra_exts, &store, &bm25, embedder)?;
+                let report = indexer::index_directory_with_options(
+                    &path,
+                    &extra_exts,
+                    &store,
+                    &bm25,
+                    embedder,
+                    indexer::IndexOptions {
+                        no_prune: args.no_prune,
+                        force: false,
+                    },
+                )?;
                 if report.indexed.is_empty() && report.skipped_unchanged == 0 {
                     Ok(format!(
-                        "WARNING: no files discovered under {} — check the path, \
+                        "WARNING: no files indexed or unchanged under {}; check the path, \
                          file extensions, and that sources are real files. {}",
                         path.display(),
                         report.summary()
