@@ -158,8 +158,8 @@ impl Store {
     /// with chunk_keys already assigned in ascending order starting from
     /// next_chunk_key().
     ///
-    /// chunks/vectors must be aligned 1:1 with the concatenation of all
-    /// documents' chunk_keys in the order they appear in docs_meta.
+    /// chunks/vectors align with ascending contiguous chunk keys, independent
+    /// of HashMap iteration order.
     pub fn upsert_batch(
         &self,
         docs_meta: &HashMap<String, (u64, i64, u64, Vec<ChunkKey>)>,
@@ -191,12 +191,17 @@ impl Store {
             // Write all new chunk/vec rows.
             let mut chunks_t = wf.open_table(CHUNKS)?;
             let mut vecs_t = wf.open_table(VECS)?;
-            let mut idx = 0usize;
+            let first_key = docs_meta
+                .values()
+                .flat_map(|m| m.3.iter())
+                .min()
+                .copied()
+                .unwrap_or(0);
             for (path, (_hash, _mtime, _size, chunk_keys)) in docs_meta {
                 for (i, key) in chunk_keys.iter().enumerate() {
-                    let text = chunks.get(idx).map(|s| s.as_str()).unwrap_or("");
-                    let vec = vectors.get(idx).cloned().unwrap_or_default();
-                    idx += 1;
+                    let idx = usize::try_from(*key - first_key)?;
+                    let text = chunks.get(idx).context("batch chunk key has no text")?;
+                    let vec = vectors.get(idx).context("batch chunk key has no vector")?;
                     let row = ChunkRow {
                         path: path.clone(),
                         ordinal: i,
@@ -205,7 +210,7 @@ impl Store {
                     let json = serde_json::to_string(&row)?;
                     chunks_t.insert(*key, json.as_str())?;
                     let mut byte_buf = Vec::with_capacity(vec.len() * 4);
-                    for v in &vec {
+                    for v in vec {
                         byte_buf.extend_from_slice(&v.to_le_bytes());
                     }
                     vecs_t.insert(*key, byte_buf.as_slice())?;

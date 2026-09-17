@@ -148,19 +148,33 @@ Ignored dirs: **every dot-directory** (`.git .obsidian .vscode …`) plus
 ```sh
 quillrag index ~/notes              # incremental walk of one root
 quillrag index ~/notes --no-prune   # add/update without deleting anything
-quillrag index ~/everything --force # wipe the store, rebuild from scratch
+quillrag index ~/notes --force      # re-embed this root, preserve other roots
 ```
 
 - **Pruning is scoped to the index root.** Docs indexed from `~/work-docs`
   survive a later `quillrag index ~/personal-notes` against the same data
   dir. Only files that lived under the directory being walked and have since
-  disappeared get pruned. Index multiple roots freely; re-index a common
-  parent (or use `--force`) when you want one tree to be the whole corpus.
+  disappeared get pruned. Existing files excluded by extensions or size stay
+  indexed. `--no-prune` disables deletion, including through MCP's `no_prune`.
+  `--force` re-embeds only the selected sources. Use `clear` explicitly to wipe
+  a store. An empty successful scan warns and may prune that root's last file.
 - **Symlinks are followed.** Staging trees built from symlinked source dirs
-  index normally. Cycles and broken links are logged and skipped, never
-  silently ignored.
+  index normally. Cycles, broken links, and unreadable directories abort the
+  walk before changing the store. Paths retain symlink aliases, so indexing
+  both an alias and its target creates separate entries.
 - **Progress is logged per 128-chunk embedding batch** (stderr), so a long
   CPU indexing run is visibly alive.
+
+### Upgrading existing indexes
+
+Older batched indexing could associate document paths with the wrong chunks.
+The fix cannot reconstruct those associations from the stored index alone.
+Build a fresh data directory from your source files, verify search results,
+then switch your client to it. Keep the old directory until verification passes.
+This also removes legacy relative-path keys, which the new indexer preserves
+rather than guessing their original working directory. New keys are absolute.
+Paths containing `..` resolve through the filesystem; use a stable spelling
+for symlink-based roots. Re-indexing refreshes the BM25 sidecar as well.
 
 ## Privacy & footprint
 
@@ -254,13 +268,13 @@ proto graphql dockerfile makefile ini cfg conf env` — extend with `-e`.
 
 ## Changelog
 
-- **v0.1.5** — indexer safety fixes: pruning is now scoped to the index root
-  (a second `index` call against a different directory no longer wipes the
-  first root's documents); symlinks are followed during the walk (staging
-  trees of symlinked sources no longer index as 0 chunks — cycles and broken
-  links are logged and skipped); embedding progress is logged per batch; an
-  empty discovery result logs a loud warning instead of exiting silently;
-  new `--no-prune` flag for add-only sync.
+- **v0.1.6**: root-scoped pruning, working `--no-prune`, source-scoped
+  `--force`, symlink traversal with failure-safe discovery, absolute source
+  keys, and correct partial-batch progress. Fixes shuffled document/chunk
+  associations in batched writes and missing BM25 result paths. Rebuild old
+  indexes into a fresh directory as described above.
+- **v0.1.5**: withdrawn draft. Initial safety fixes were incomplete; do not
+  use this tag for production.
 - **v0.1.4** — multi-thread inference + batched indexing.
 - **v0.1.3** — MCP tool descriptions rewritten for clarity, parameter semantics,
   and behavioral transparency (read-only/destructive flags, usage guidance);
@@ -274,7 +288,7 @@ proto graphql dockerfile makefile ini cfg conf env` — extend with `-e`.
 ## Development
 
 ```sh
-cargo test                    # unit + end-to-end (spawns real stdio servers)
+cargo test --release          # unit + end-to-end with real model inference
 cargo run -- serve            # dev server
 RUST_LOG=debug cargo run ...  # verbose logs (stderr only)
 ```

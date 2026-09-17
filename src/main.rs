@@ -62,7 +62,7 @@ enum Cmd {
         /// Extra extensions to include beyond defaults.
         #[arg(short = 'e', long, value_delimiter = ',')]
         extensions: Vec<String>,
-        /// Re-chunk and re-embed every known document from scratch.
+        /// Re-embed files under PATH without clearing other sources.
         #[arg(long)]
         force: bool,
         /// Index/add/update only: never prune docs missing from this walk.
@@ -170,16 +170,14 @@ async fn main() -> Result<()> {
         } => {
             setup_tracing();
             let mut eng = open_engine(&cli.data_dir)?;
-            if force {
-                eng.store.clear()?;
-            }
             let report = if path.is_dir() {
-                indexer::index_directory(
+                indexer::index_directory_with_options(
                     &path,
                     &extensions,
                     &eng.store,
                     &eng.bm25,
                     &mut eng.embedder,
+                    indexer::IndexOptions { no_prune, force },
                 )?
             } else if path.is_file() {
                 let n = indexer::index_one(&path, &eng.store, &eng.bm25, &mut eng.embedder)?;
@@ -193,19 +191,8 @@ async fn main() -> Result<()> {
                 anyhow::bail!("path does not exist: {}", path.display());
             };
             println!("{}", report.summary());
-            // A directory walk that discovers nothing is almost always a
-            // mistake (wrong path, wrong extensions, dangling links). Fail
-            // loudly rather than exiting 0 with an empty corpus.
-            if path.is_dir()
-                && report.indexed.is_empty()
-                && report.skipped_unchanged == 0
-                && !no_prune
-            {
-                anyhow::bail!(
-                    "no files indexed and none unchanged under {} — \
-                     refusing to treat this as success",
-                    path.display()
-                );
+            if !report.failed.is_empty() {
+                anyhow::bail!("failed sources: {}", report.failed.join("; "));
             }
             Ok(())
         }
