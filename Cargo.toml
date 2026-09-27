@@ -9,28 +9,79 @@ repository = "https://github.com/Ayush-yadav11/quillrag"
 keywords = ["mcp", "rag", "embeddings", "local", "search"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = ["cli"]
+# MCP stdio server (`quillrag::server`).
+mcp = ["dep:rmcp", "dep:tokio"]
+# The `quillrag` and `quillbench` binaries. Embedders of the engine (e.g. a
+# desktop app) depend on this crate with `default-features = false`.
+cli = ["mcp", "dep:clap", "dep:tracing-subscriber"]
+# PDF text extraction (`quillrag::PdfExtractor`), one section per page.
+pdf = ["dep:pdf-extract"]
+# OCR for images and scanned PDF pages (`quillrag::Ocr`, `ImageExtractor`).
+# Bundles the ocrs detection + recognition models (~12 MB, CC BY-SA 4.0).
+ocr = ["pdf", "dep:ocrs", "dep:rten", "dep:image", "dep:hayro"]
+
+[lib]
+name = "quillrag"
+path = "src/lib.rs"
+
 [[bin]]
 name = "quillrag"
 path = "src/main.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "quillbench"
+path = "src/bin/quillbench.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "e2e"
+required-features = ["cli"]
+
+[[test]]
+name = "index_safety"
+required-features = ["cli"]
+
+[[test]]
+name = "pdf"
+required-features = ["pdf"]
+
+[[test]]
+name = "ocr"
+required-features = ["ocr"]
 
 [dependencies]
 anyhow = "1"
 candle-core = "0.11"
 candle-nn = "0.11"
 candle-transformers = "0.11"
-clap = { version = "4.6", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"], optional = true }
 redb = "4.2"
-rmcp = { version = "3.1", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.1", features = ["server", "macros", "transport-io"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tantivy = "0.26"
 tokenizers = "0.23"
 num_cpus = "1"
+pdf-extract = { version = "0.12", optional = true }
+ocrs = { version = "0.13", optional = true, features = ["rten"] }
+rten = { version = "0.26", optional = true, default-features = false, features = ["rten_format"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+hayro = { version = "0.7", optional = true }
 rayon = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 walkdir = "2"
+
+[dev-dependencies]
+# Builds PDF fixtures in tests; same major as pdf-extract's lopdf.
+lopdf = "0.42"
+# Renders text PDFs into images for OCR tests; the fonts are only needed there.
+hayro = { version = "0.7", features = ["embed-fonts"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 opt-level = 3

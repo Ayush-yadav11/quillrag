@@ -158,7 +158,7 @@ impl QuillRag {
                     embedder,
                     indexer::IndexOptions {
                         no_prune: args.no_prune,
-                        force: false,
+                        ..Default::default()
                     },
                 )?;
                 if report.indexed.is_empty() && report.skipped_unchanged == 0 {

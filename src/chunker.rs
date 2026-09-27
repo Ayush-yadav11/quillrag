@@ -42,6 +42,20 @@ pub fn chunk_text(text: &str) -> Vec<String> {
     chunks
 }
 
+/// Chunk each section separately so no chunk spans two sections (pages).
+/// Returns the chunk texts and, aligned with them, each chunk's page.
+pub fn chunk_sections(sections: &[crate::extract::Section]) -> (Vec<String>, Vec<Option<u32>>) {
+    let mut chunks = Vec::new();
+    let mut pages = Vec::new();
+    for section in sections {
+        for chunk in chunk_text(&section.text) {
+            chunks.push(chunk);
+            pages.push(section.page);
+        }
+    }
+    (chunks, pages)
+}
+
 fn split_paragraphs(text: &str) -> Vec<&str> {
     text.split("\n\n")
         .flat_map(|p| p.split("\r\n\r\n"))

@@ -26,6 +26,10 @@ pub struct ChunkRow {
     pub path: String,
     pub ordinal: usize,
     pub text: String,
+    /// Source page for paged formats. Absent in rows written before pages
+    /// existed, so no schema bump is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -48,6 +52,9 @@ pub struct Hit {
     pub score: f32,
     /// The chunk text.
     pub text: String,
+    /// 1-based source page, for paged formats like PDF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -166,6 +173,18 @@ impl Store {
         chunks: &[String],
         vectors: &[Vec<f32>],
     ) -> Result<usize> {
+        self.upsert_batch_with_pages(docs_meta, chunks, &[], vectors)
+    }
+
+    /// [`Store::upsert_batch`] with each chunk's source page. `pages` aligns
+    /// with `chunks`; missing entries mean "no page".
+    pub fn upsert_batch_with_pages(
+        &self,
+        docs_meta: &HashMap<String, (u64, i64, u64, Vec<ChunkKey>)>,
+        chunks: &[String],
+        pages: &[Option<u32>],
+        vectors: &[Vec<f32>],
+    ) -> Result<usize> {
         let db = self.db.clone();
         let wf = db.begin_write()?;
         {
@@ -206,6 +225,7 @@ impl Store {
                         path: path.clone(),
                         ordinal: i,
                         text: text.to_string(),
+                        page: pages.get(idx).copied().flatten(),
                     };
                     let json = serde_json::to_string(&row)?;
                     chunks_t.insert(*key, json.as_str())?;
@@ -342,15 +362,20 @@ impl Store {
         path: &str,
         ordinal: usize,
     ) -> Result<Option<(String, usize, String)>> {
+        Ok(self
+            .get_chunk_row_by_ordinal(path, ordinal)?
+            .map(|row| (row.path, row.ordinal, row.text)))
+    }
+
+    /// Full chunk row (including page) by document path + ordinal.
+    pub fn get_chunk_row_by_ordinal(&self, path: &str, ordinal: usize) -> Result<Option<ChunkRow>> {
         let rx = self.db.begin_read()?;
         let docs = rx.open_table(DOCS)?;
         if let Some(bytes) = docs.get(path)? {
             let meta: DocumentMeta = serde_json::from_str(bytes.value())?;
             drop(docs);
             if let Some(key) = meta.chunk_keys.get(ordinal) {
-                if let Some(row) = self.get_chunk_row(*key)? {
-                    return Ok(Some((row.path, row.ordinal, row.text)));
-                }
+                return self.get_chunk_row(*key);
             }
         }
         Ok(None)

@@ -108,9 +108,13 @@ impl TantivyIndex {
         // excludes!), so a query for "json-rpc" would otherwise exclude every
         // document mentioning rpc. We trade exotic query syntax for
         // predictable behavior — exact tokens (E0382, MINLML6V2) survive.
+        //
+        // Stopwords are dropped too: the query parser ORs terms, so "notes on
+        // the migration" would otherwise match every document containing
+        // "the". A stopword-only query leaves ranking to the dense side.
         let sanitized: String = query
             .split(|c: char| !c.is_alphanumeric())
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty() && !is_stopword(s))
             .collect::<Vec<_>>()
             .join(" ");
         if sanitized.is_empty() {
@@ -146,6 +150,35 @@ impl TantivyIndex {
     }
 }
 
+/// Common English function words that carry no topical signal for BM25.
+const STOPWORDS: &[&str] = &[
+    "a", "about", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from",
+    "how", "i", "in", "into", "is", "it", "its", "me", "my", "of", "on", "or", "our", "that",
+    "the", "their", "this", "to", "was", "we", "what", "when", "where", "which", "who", "why",
+    "will", "with", "you", "your",
+];
+
+fn is_stopword(token: &str) -> bool {
+    token.len() <= 5 && STOPWORDS.contains(&token.to_lowercase().as_str())
+}
+
+/// Knobs for [`hybrid_search_with`].
+#[derive(Debug, Clone, Copy)]
+pub struct SearchOptions {
+    /// Dense candidates below this cosine similarity are dropped before
+    /// fusion, so unrelated documents stop filling the result list. Keyword
+    /// (BM25) matches are kept regardless. `f32::NEG_INFINITY` disables it.
+    pub min_similarity: f32,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            min_similarity: f32::NEG_INFINITY,
+        }
+    }
+}
+
 /// Reciprocal Rank Fusion over dense + BM25 rankings.
 ///
 /// RRF(d) = Σ 1/(k + rank_i(d)); k=60 is the standard constant.
@@ -177,11 +210,34 @@ pub fn hybrid_search(
     tantivy_idx: &TantivyIndex,
     embedder: &mut crate::embedder::Embedder,
 ) -> Result<Vec<Hit>> {
+    hybrid_search_with(
+        query,
+        top_k,
+        store,
+        tantivy_idx,
+        embedder,
+        SearchOptions::default(),
+    )
+}
+
+/// [`hybrid_search`] with a relevance floor for dense candidates.
+pub fn hybrid_search_with(
+    query: &str,
+    top_k: usize,
+    store: &Store,
+    tantivy_idx: &TantivyIndex,
+    embedder: &mut crate::embedder::Embedder,
+    options: SearchOptions,
+) -> Result<Vec<Hit>> {
     // 1. Dense candidates: fetch 4x top_k so fusion has overlap to work with.
     let qvec = embedder.embed_one(query)?;
     let dense_keys = store.dense_scan(&qvec)?;
     let mut dense: Vec<(String, usize)> = Vec::with_capacity(top_k * 4);
-    for (key, _) in dense_keys.into_iter().take(top_k * 4) {
+    for (key, _) in dense_keys
+        .into_iter()
+        .take_while(|(_, score)| *score >= options.min_similarity)
+        .take(top_k * 4)
+    {
         if let Some(row) = store.get_chunk_row(key)? {
             dense.push((row.path, row.ordinal));
         }
@@ -197,23 +253,15 @@ pub fn hybrid_search(
     let n = fused.len() as f32;
     let mut hits = Vec::with_capacity(fused.len());
     for (i, (path, ordinal)) in fused.iter().enumerate() {
-        if let Some((p, o, t)) = find_chunk(store, path, *ordinal)? {
+        if let Some(row) = store.get_chunk_row_by_ordinal(path, *ordinal)? {
             hits.push(Hit {
-                path: p,
-                chunk_index: o,
+                path: row.path,
+                chunk_index: row.ordinal,
                 score: ((n - i as f32) / n * 100.0).round() / 100.0,
-                text: t,
+                text: row.text,
+                page: row.page,
             });
         }
     }
     Ok(hits)
-}
-
-/// Locate a chunk row given (path, ordinal) via the store.
-fn find_chunk(
-    store: &Store,
-    path: &str,
-    ordinal: usize,
-) -> Result<Option<(String, usize, String)>> {
-    store.get_chunk_by_ordinal(path, ordinal)
 }
