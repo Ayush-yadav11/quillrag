@@ -148,6 +148,20 @@ cfg conf env` — extend with `-e ext1,ext2` / `"extensions": [...]`.
 Ignored dirs: **every dot-directory** (`.git .obsidian .vscode …`) plus
 `node_modules target dist build venv __pycache__ vendor`.
 
+### Optional formats (library features)
+
+Applications embedding the engine (`default-features = false`) can index more
+through `IndexHooks` extractors:
+
+| Feature | Adds |
+|---|---|
+| `pdf` | `PdfExtractor`: text-layer PDFs, one section per page; hits carry `page`. |
+| `ocr` | `Ocr`, `ImageExtractor` (png/jpg/webp/bmp/gif) and OCR of scanned PDF pages via `PdfExtractor::with_ocr`. Bundles the [ocrs](https://github.com/robertknight/ocrs) models (~12 MB, CC BY-SA 4.0, see [assets/ocr/NOTICE.md](assets/ocr/NOTICE.md)); English / basic Latin text only. |
+
+Files that are readable but contain no text are recorded as empty documents,
+so unchanged ones are not re-OCR'd on every pass (`IndexOptions::retry_empty`
+re-checks them).
+
 ### Indexing behavior
 
 ```sh
@@ -298,4 +312,5 @@ cargo run -- serve            # dev server
 RUST_LOG=debug cargo run ...  # verbose logs (stderr only)
 ```
 
-License: MIT
+License: MIT. The optional OCR models under `assets/ocr/` are CC BY-SA 4.0;
+see [assets/ocr/NOTICE.md](assets/ocr/NOTICE.md).

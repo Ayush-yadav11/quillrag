@@ -177,7 +177,11 @@ async fn main() -> Result<()> {
                     &eng.store,
                     &eng.bm25,
                     &mut eng.embedder,
-                    indexer::IndexOptions { no_prune, force },
+                    indexer::IndexOptions {
+                        no_prune,
+                        force,
+                        ..Default::default()
+                    },
                 )?
             } else if path.is_file() {
                 let n = indexer::index_one(&path, &eng.store, &eng.bm25, &mut eng.embedder)?;

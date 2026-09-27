@@ -7,6 +7,7 @@
 
 use crate::chunker;
 use crate::embedder::Embedder;
+use crate::extract::{self, Extractor, Section, DEFAULT_MAX_FILE_BYTES};
 use crate::store::{ChunkKey, Store};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -82,6 +83,15 @@ fn ext_of(path: &Path) -> Option<String> {
 /// Symlinked files and directories are included. Any walk error aborts
 /// discovery before the index changes, including broken links and cycles.
 pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>> {
+    discover(root, extra_exts, &|_| DEFAULT_MAX_FILE_BYTES)
+}
+
+/// [`discover_files`] with a size limit per extension.
+fn discover(
+    root: &Path,
+    extra_exts: &[String],
+    max_bytes: &dyn Fn(&str) -> u64,
+) -> Result<Vec<PathBuf>> {
     let mut allowed: std::collections::HashSet<String> =
         DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect();
     for e in extra_exts {
@@ -107,18 +117,17 @@ pub fn discover_files(root: &Path, extra_exts: &[String]) -> Result<Vec<PathBuf>
             continue;
         }
         let path = entry.path();
+        let Some(ext) = ext_of(path).filter(|e| allowed.contains(e)) else {
+            continue;
+        };
         let meta = entry
             .metadata()
             .with_context(|| format!("reading metadata {}", path.display()))?;
-        if meta.len() > 8 * 1024 * 1024 {
+        if meta.len() > max_bytes(&ext) {
             tracing::warn!(path = %path.display(), size = meta.len(), "skipping large file");
             continue;
         }
-        if let Some(ext) = ext_of(path) {
-            if allowed.contains(&ext) {
-                out.push(path.to_path_buf());
-            }
-        }
+        out.push(path.to_path_buf());
     }
     out.sort();
     Ok(out)
@@ -162,34 +171,32 @@ struct FileFacts {
     size: u64,
 }
 
+fn mtime_secs(meta: &std::fs::Metadata) -> Result<i64> {
+    Ok(meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0))
+}
+
 fn facts(path: &Path) -> Result<FileFacts> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let meta = std::fs::metadata(path)?;
     Ok(FileFacts {
         hash: hash_bytes(&bytes),
-        mtime_secs: meta
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
+        mtime_secs: mtime_secs(&meta)?,
         size: meta.len(),
     })
 }
 
-/// Read a file as text, auto-detecting encoding via chardet.
-fn read_text(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    if bytes.starts_with(b"\xef\xbb\xbf") {
-        // Strip BOM and try UTF-8.
-        let sans_bom = &bytes[3..];
-        return String::from_utf8(sans_bom.to_vec())
-            .with_context(|| format!("decoding {} as utf-8", path.display()));
-    }
-    if let Ok(s) = String::from_utf8(bytes.clone()) {
-        return Ok(s);
-    }
-    // Fall back to lossy: replace invalid UTF-8 with U+FFFD.
-    Ok(String::from_utf8_lossy(&bytes).to_string())
+/// Same size and mtime as when indexed: skip without reading the file.
+/// Content hashing only runs for files whose metadata changed, which keeps
+/// re-scans of large PDF folders cheap.
+fn unchanged_by_stat(path: &Path, known: &crate::store::DocumentMeta) -> bool {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| Some(m.len() == known.size && mtime_secs(&m).ok()? == known.mtime_secs))
+        .unwrap_or(false)
 }
 
 /// Index one file into the store + tantivy sidecar.
@@ -199,16 +206,31 @@ pub fn index_one(
     tantivy_idx: &crate::search::TantivyIndex,
     embedder: &mut Embedder,
 ) -> Result<usize> {
+    index_one_with(path, store, tantivy_idx, embedder, &IndexHooks::default())
+}
+
+/// [`index_one`] with extractor hooks, so binary formats can be indexed.
+pub fn index_one_with(
+    path: &Path,
+    store: &Store,
+    tantivy_idx: &crate::search::TantivyIndex,
+    embedder: &mut Embedder,
+    hooks: &IndexHooks<'_>,
+) -> Result<usize> {
     let absolute = absolute_source_path(path)?;
     let path = absolute.as_path();
-    let text = read_text(path)?;
-    let chunks = chunker::chunk_text(&text);
+    let sections = hooks.extract(path)?;
+    let (chunks, pages) = chunker::chunk_sections(&sections);
     if chunks.is_empty() {
         anyhow::bail!("no indexable content");
     }
     let f = facts(path)?;
     let key = path.to_string_lossy().to_string();
-    let n = store.upsert_document(&key, f.hash, f.mtime_secs, f.size, &chunks, embedder)?;
+    let vectors = embedder.embed_batch(&chunks)?;
+    let first = store.next_chunk_key()?;
+    let keys = (0..chunks.len()).map(|i| first + i as u64).collect();
+    let docs_meta = HashMap::from([(key, (f.hash, f.mtime_secs, f.size, keys))]);
+    let n = store.upsert_batch_with_pages(&docs_meta, &chunks, &pages, &vectors)?;
     tantivy_idx.rebuild_from(store)?;
     Ok(n)
 }
@@ -245,6 +267,63 @@ pub fn index_directory(
 pub struct IndexOptions {
     pub no_prune: bool,
     pub force: bool,
+    /// Re-extract unchanged files that were recorded as having no text,
+    /// e.g. after an extractor gained a capability such as OCR.
+    pub retry_empty: bool,
+}
+
+/// Progress events emitted during an index pass, for UIs that want more than
+/// the stderr log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexProgress {
+    /// Discovery finished with `files` candidate files.
+    Discovered { files: usize },
+    /// Change scan: `done` of `total` files hashed and (if changed) extracted.
+    Scanned { done: usize, total: usize },
+    /// `done` of `total` changed chunks embedded.
+    Embedding { done: usize, total: usize },
+    /// The pass committed; the BM25 sidecar is rebuilt.
+    Finished,
+}
+
+/// Optional extension points for an index pass. `IndexHooks::default()`
+/// reproduces the plain-text CLI behavior.
+#[derive(Default, Clone, Copy)]
+pub struct IndexHooks<'a> {
+    /// Extractors for non-text formats; their extensions are added to
+    /// discovery automatically.
+    pub extractors: &'a [&'a dyn Extractor],
+    /// Called synchronously on the indexing thread; keep it cheap.
+    pub progress: Option<&'a (dyn Fn(IndexProgress) + Sync)>,
+}
+
+impl IndexHooks<'_> {
+    fn emit(&self, event: IndexProgress) {
+        if let Some(f) = self.progress {
+            f(event);
+        }
+    }
+
+    fn extract(&self, path: &Path) -> Result<Vec<Section>> {
+        match ext_of(path).and_then(|e| extract::find(self.extractors, &e)) {
+            // The extractor's own message ("password-protected PDF") is what
+            // the user needs; the path is added by the caller's report.
+            Some(x) => x.extract(path),
+            None => Ok(vec![Section::text(extract::read_text(path)?)]),
+        }
+    }
+
+    fn max_file_bytes(&self, ext: &str) -> u64 {
+        extract::find(self.extractors, ext)
+            .map(|x| x.max_file_bytes())
+            .unwrap_or(DEFAULT_MAX_FILE_BYTES)
+    }
+
+    fn extensions(&self) -> impl Iterator<Item = String> + '_ {
+        self.extractors
+            .iter()
+            .flat_map(|x| x.extensions().iter().map(|e| e.to_lowercase()))
+    }
 }
 
 pub fn index_directory_with_options(
@@ -255,11 +334,38 @@ pub fn index_directory_with_options(
     embedder: &mut Embedder,
     options: IndexOptions,
 ) -> Result<IndexReport> {
+    index_directory_with(
+        dir,
+        extra_exts,
+        store,
+        tantivy_idx,
+        embedder,
+        options,
+        &IndexHooks::default(),
+    )
+}
+
+/// Full incremental pass with extractor and progress hooks.
+pub fn index_directory_with(
+    dir: &Path,
+    extra_exts: &[String],
+    store: &Store,
+    tantivy_idx: &crate::search::TantivyIndex,
+    embedder: &mut Embedder,
+    options: IndexOptions,
+    hooks: &IndexHooks<'_>,
+) -> Result<IndexReport> {
     let dir = absolute_source_path(dir)?;
     let dir = dir.as_path();
     anyhow::ensure!(dir.is_dir(), "not a directory: {}", dir.display());
     let t_walk = Instant::now();
-    let files = discover_files(dir, extra_exts)?;
+    let exts: Vec<String> = extra_exts
+        .iter()
+        .cloned()
+        .chain(hooks.extensions())
+        .collect();
+    let files = discover(dir, &exts, &|ext| hooks.max_file_bytes(ext))?;
+    hooks.emit(IndexProgress::Discovered { files: files.len() });
     anyhow::ensure!(
         store.schema_matches()?,
         "incompatible store schema; rebuild into a new data directory"
@@ -285,10 +391,27 @@ pub fn index_directory_with_options(
     // giant batch for better CPU utilization.
     let mut docs_meta: HashMap<String, (u64, i64, u64, Vec<ChunkKey>)> = HashMap::new();
     let mut all_chunks: Vec<String> = Vec::new();
+    let mut all_pages: Vec<Option<u32>> = Vec::new();
     let mut cursor: u64 = store.next_chunk_key()?;
 
-    for path in &files {
+    let total_files = files.len();
+    for (i, path) in files.iter().enumerate() {
+        if i > 0 {
+            hooks.emit(IndexProgress::Scanned {
+                done: i,
+                total: total_files,
+            });
+        }
         let key = path.to_string_lossy().to_string();
+        let may_skip = |meta: &crate::store::DocumentMeta| {
+            !options.force && !(options.retry_empty && meta.chunk_keys.is_empty())
+        };
+        if let Some(meta) = known.get(&key) {
+            if may_skip(meta) && unchanged_by_stat(path, meta) {
+                report.skipped_unchanged += 1;
+                continue;
+            }
+        }
         let f = match facts(path) {
             Ok(f) => f,
             Err(e) => {
@@ -297,31 +420,47 @@ pub fn index_directory_with_options(
             }
         };
         if let Some(meta) = known.get(&key) {
-            if !options.force && meta.hash == f.hash && meta.mtime_secs == f.mtime_secs {
+            if may_skip(meta) && meta.hash == f.hash && meta.mtime_secs == f.mtime_secs {
                 report.skipped_unchanged += 1;
                 continue;
             }
         }
-        let text = match read_text(path) {
-            Ok(t) => t,
+        // Files without text are stored as empty documents (no chunks) so
+        // the next pass skips them while unchanged. Other errors may be
+        // transient (locked file, flaky drive) and are retried next pass.
+        let remember_empty = |docs_meta: &mut HashMap<_, _>| {
+            docs_meta.insert(key.clone(), (f.hash, f.mtime_secs, f.size, Vec::new()));
+        };
+        let sections = match hooks.extract(path) {
+            Ok(s) => s,
             Err(e) => {
-                report.failed.push(format!("{} ({e})", path.display()));
+                report.failed.push(format!("{} ({e:#})", path.display()));
+                if e.is::<extract::NoText>() {
+                    remember_empty(&mut docs_meta);
+                }
                 continue;
             }
         };
-        let chunks = chunker::chunk_text(&text);
+        let (chunks, pages) = chunker::chunk_sections(&sections);
         if chunks.is_empty() {
             report
                 .failed
                 .push(format!("{} (no content)", path.display()));
+            remember_empty(&mut docs_meta);
             continue;
         }
         let chunk_keys: Vec<ChunkKey> = (0..chunks.len()).map(|i| cursor + i as u64).collect();
         cursor += chunks.len() as u64;
         docs_meta.insert(key.clone(), (f.hash, f.mtime_secs, f.size, chunk_keys));
         all_chunks.extend(chunks);
+        all_pages.extend(pages);
         report.indexed.push(path.to_string_lossy().to_string());
     }
+
+    hooks.emit(IndexProgress::Scanned {
+        done: total_files,
+        total: total_files,
+    });
 
     // Single large embed batch for all chunks across all changed documents.
     // Embed in sub-batches of 128 to bound memory while still letting
@@ -329,18 +468,19 @@ pub fn index_directory_with_options(
     // per-document batches of ~16). Log progress per window: a silent
     // 7-minute stretch is indistinguishable from a hang.
     let t_embed = Instant::now();
+    let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(all_chunks.len());
     if !all_chunks.is_empty() {
         tracing::info!(
             "embedding {} chunks across {} documents",
             all_chunks.len(),
             docs_meta.len()
         );
-        let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(all_chunks.len());
         let total = all_chunks.len();
         for chunk_window in all_chunks.chunks(128) {
             let batch_vecs = embedder.embed_batch(chunk_window)?;
             all_vectors.extend(batch_vecs);
             let done = all_vectors.len();
+            hooks.emit(IndexProgress::Embedding { done, total });
             tracing::info!(
                 "embedded {}/{} chunks ({}%)",
                 done,
@@ -349,7 +489,10 @@ pub fn index_directory_with_options(
             );
         }
         tracing::info!("embedding done in {:.1}s", t_embed.elapsed().as_secs_f64());
-        store.upsert_batch(&docs_meta, &all_chunks, &all_vectors)?;
+    }
+    // Also runs with no chunks at all, to record files without text.
+    if !docs_meta.is_empty() {
+        store.upsert_batch_with_pages(&docs_meta, &all_chunks, &all_pages, &all_vectors)?;
     }
 
     // Prune docs that no longer exist on disk — scoped to this index root.
@@ -373,6 +516,7 @@ pub fn index_directory_with_options(
 
     // Rebuild the BM25 sidecar once for the full corpus.
     tantivy_idx.rebuild_from(store)?;
+    hooks.emit(IndexProgress::Finished);
 
     tracing::debug!(
         "index pass over {} took walk {:.2}s, embed {:.2}s",
